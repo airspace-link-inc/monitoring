@@ -1,5 +1,4 @@
 *.json
-*.yaml
 *.sh
 *.bat
 *.jsonnet
