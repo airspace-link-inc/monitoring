@@ -21,7 +21,7 @@ services:
       test: curl -f 'http://localhost:8080/health?ready=1' || exit 1
       interval: 3m
       start_period: 30s
-      start_interval: 5s
+      # start_interval: 5s
     platform: linux/amd64
 
   rid_bootstrapper:
@@ -70,7 +70,7 @@ services:
       test: wget -O - 'http://localhost/healthy' || exit 1
       interval: 3m
       start_period: 30s
-      start_interval: 5s
+      # start_interval: 5s
     platform: linux/amd64
 
   oauth:
@@ -87,7 +87,7 @@ services:
       test: wget -O - 'http://localhost:8085/token?intended_audience=-&scope=-' || exit 1
       interval: 3m
       start_period: 30s
-      start_interval: 5s
+      # start_interval: 5s
     platform: linux/amd64
 
 networks:

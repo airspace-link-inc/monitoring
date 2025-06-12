@@ -30,7 +30,7 @@ services:
     volumes:
       - ../../build/test-certs:/var/test-certs:ro
       - ./output/scdsc_a_interaction_logs:/app/monitoring/mock_uss/output/scdsc_a_interaction_logs
-    user: "${UID_GID}"
+    # user: "${UID_GID}"
     restart: always
     networks:
       - interop_ecosystem_network
@@ -249,7 +249,7 @@ services:
     volumes:
       - ../../build/test-certs:/var/test-certs:ro
       - ./output/tracer:/app/monitoring/mock_uss/output/tracer
-    user: "${UID_GID}"
+    # user: "${UID_GID}"
     restart: always
     networks:
       - interop_ecosystem_network
@@ -283,7 +283,7 @@ services:
     volumes:
       - ../../build/test-certs:/var/test-certs:ro
       - ./output/scdsc_interaction_logs:/app/monitoring/mock_uss/output/scdsc_interaction_logs
-    user: "${UID_GID}"
+    # user: "${UID_GID}"
     restart: always
     networks:
       - interop_ecosystem_network
