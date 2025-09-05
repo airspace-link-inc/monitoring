@@ -1,0 +1,20 @@
+{
+  "test_run_information": {
+    "test_run_id": "8da9bd3527913374516cc3703ce9ff80bd52161856dce52590cc0bf0b8119403",
+    "start_time": "2025-09-05 17:39:57 UTC",
+    "end_time": "2025-09-05 17:41:04 UTC",
+    "baseline": "b9e2da556ae36872aab3624a9c79989c981f938317d8e4ed26366f4306e17a6d",
+    "environment": "4fc6d92db64a56c8be6bf5d85c63c9ec508c5d768509209ec56ba065afb04d35"
+  },
+  "participant_verifications": {
+    "uss1": {
+      "status": "Incomplete",
+      "system_version": "airspace-link-inc/monitoring/v0.0.0-12984b1"
+    },
+    "uss2": {
+      "status": "Incomplete",
+      "system_version": "airspace-link-inc/monitoring/v0.0.0-12984b1"
+    }
+  },
+  "artifact_configuration": "scd"
+}
