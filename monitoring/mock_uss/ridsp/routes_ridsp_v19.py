@@ -1,6 +1,5 @@
 import datetime
 from datetime import timedelta
-from typing import List, Optional
 
 import arrow
 import flask
@@ -25,7 +24,7 @@ from uas_standards.astm.f3411.v19.constants import (
 )
 from uas_standards.interuss.automated_testing.rid.v1 import injection
 
-from monitoring.mock_uss import webapp
+from monitoring.mock_uss.app import webapp
 from monitoring.mock_uss.auth import requires_scope
 from monitoring.monitorlib import geo
 from monitoring.monitorlib.rid import RIDVersion
@@ -55,7 +54,7 @@ def _get_report(
     t_request: datetime.datetime,
     view: s2sphere.LatLngRect,
     include_recent_positions: bool,
-) -> Optional[RIDFlight]:
+) -> RIDFlight | None:
     details = flight.get_details(t_request)
     if not details:
         return None
@@ -77,7 +76,7 @@ def _get_report(
         simulated=True,
     )
     if include_recent_positions:
-        recent_positions: List[RIDRecentAircraftPosition] = []
+        recent_positions: list[RIDRecentAircraftPosition] = []
         for recent_state in recent_states:
             recent_positions.append(
                 RIDRecentAircraftPosition(
@@ -118,7 +117,7 @@ def ridsp_flights_v19():
         view = geo.make_latlng_rect(flask.request.args["view"])
     except ValueError as e:
         return (
-            flask.jsonify(ErrorResponse(message="Error parsing view: {}".format(e))),
+            flask.jsonify(ErrorResponse(message=f"Error parsing view: {e}")),
             400,
         )
 
@@ -128,9 +127,7 @@ def ridsp_flights_v19():
 
     diagonal = geo.get_latlngrect_diagonal_km(view)
     if diagonal > NetMaxDisplayAreaDiagonalKm:
-        msg = "Requested diagonal of {} km exceeds limit of {} km".format(
-            diagonal, NetMaxDisplayAreaDiagonalKm
-        )
+        msg = f"Requested diagonal of {diagonal} km exceeds limit of {NetMaxDisplayAreaDiagonalKm} km"
         return flask.jsonify(ErrorResponse(message=msg)), 413
 
     now = arrow.utcnow().datetime
@@ -168,6 +165,6 @@ def ridsp_flight_details_v19(id: str):
                     200,
                 )
     return (
-        flask.jsonify(ErrorResponse(message="Flight {} not found".format(id))),
+        flask.jsonify(ErrorResponse(message=f"Flight {id} not found")),
         404,
     )

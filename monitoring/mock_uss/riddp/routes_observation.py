@@ -1,6 +1,5 @@
 import uuid
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple
 
 import arrow
 import flask
@@ -22,7 +21,7 @@ from uas_standards.interuss.automated_testing.rid.v1.observation import (
     UAType,
 )
 
-from monitoring.mock_uss import webapp
+from monitoring.mock_uss.app import webapp
 from monitoring.mock_uss.auth import requires_scope
 from monitoring.mock_uss.config import KEY_BASE_URL
 from monitoring.mock_uss.riddp.database import ObservationSubscription
@@ -43,9 +42,9 @@ from .database import db
 def _make_flight_observation(
     flight: Flight, view: s2sphere.LatLngRect
 ) -> observation_api.Flight:
-    paths: List[List[observation_api.Position]] = []
-    current_path: List[observation_api.Position] = []
-    previous_position: Optional[observation_api.Position] = None
+    paths: list[list[observation_api.Position]] = []
+    current_path: list[observation_api.Position] = []
+    previous_position: observation_api.Position | None = None
 
     lat_min = view.lat_lo().degrees
     lat_max = view.lat_hi().degrees
@@ -110,7 +109,7 @@ def _make_flight_observation(
 
 @webapp.route("/riddp/observation/display_data", methods=["GET"])
 @requires_scope(Scope.Read)
-def riddp_display_data() -> Tuple[flask.Response, int]:
+def riddp_display_data() -> tuple[flask.Response, int]:
     """Implements retrieval of current display data per automated testing API."""
 
     if "view" not in flask.request.args:
@@ -122,7 +121,7 @@ def riddp_display_data() -> Tuple[flask.Response, int]:
         view = geo.make_latlng_rect(flask.request.args["view"])
     except ValueError as e:
         return (
-            flask.jsonify(ErrorResponse(message="Error parsing view: {}".format(e))),
+            flask.jsonify(ErrorResponse(message=f"Error parsing view: {e}")),
             400,
         )
 
@@ -136,16 +135,19 @@ def riddp_display_data() -> Tuple[flask.Response, int]:
             413,
         )
 
-    with db as tx:
+    with db.transact() as tx:
         # Find an existing subscription to serve this request
-        subscription: Optional[ObservationSubscription] = None
+        subscription: ObservationSubscription | None = None
         t_max = (
             arrow.utcnow() + timedelta(seconds=1)
         ).datetime  # Don't rely on subscriptions very near their expiration
-        tx.subscriptions = [
-            s for s in tx.subscriptions if s.upsert_result.subscription.time_end > t_max
+        tx.value.subscriptions = [
+            s
+            for s in tx.value.subscriptions
+            if s.upsert_result.subscription
+            and s.upsert_result.subscription.time_end > t_max
         ]
-        for existing_subscription in tx.subscriptions:
+        for existing_subscription in tx.value.subscriptions:
             assert isinstance(existing_subscription, ObservationSubscription)
             sub_rect = existing_subscription.bounds.to_latlngrect()
             if sub_rect.contains(view):
@@ -185,12 +187,12 @@ def riddp_display_data() -> Tuple[flask.Response, int]:
             subscription = ObservationSubscription(
                 bounds=sub_bounds, upsert_result=upsert_result, updates=[]
             )
-            tx.subscriptions.append(subscription)
+            tx.value.subscriptions.append(subscription)
 
     # Fetch flights from each unique flights URL
-    validated_flights: List[Flight] = []
+    validated_flights: list[Flight] = []
     tx = db.value
-    flight_info: Dict[str, database.FlightInfo] = {k: v for k, v in tx.flights.items()}
+    flight_info: dict[str, database.FlightInfo] = {k: v for k, v in tx.flights.items()}
     behavior: DisplayProviderBehavior = tx.behavior
 
     for flights_url, uss in subscription.flights_urls.items():
@@ -223,9 +225,9 @@ def riddp_display_data() -> Tuple[flask.Response, int]:
             flight_info[flight.id] = database.FlightInfo(flights_url=flights_url)
 
     # Update links between flight IDs and flight URLs
-    with db as tx:
+    with db.transact() as tx:
         for k, v in flight_info.items():
-            tx.flights[k] = v
+            tx.value.flights[k] = v
 
     # Make and return response
     flights = [_make_flight_observation(f, view) for f in validated_flights]
@@ -244,7 +246,7 @@ def riddp_display_data() -> Tuple[flask.Response, int]:
 
 @webapp.route("/riddp/observation/display_data/<flight_id>", methods=["GET"])
 @requires_scope(Scope.Read)
-def riddp_flight_details(flight_id: str) -> Tuple[str, int]:
+def riddp_flight_details(flight_id: str) -> tuple[str, int] | flask.Response:
     """Implements get flight details endpoint per automated testing API."""
     tx = db.value
     flight_info = tx.flights.get(flight_id)

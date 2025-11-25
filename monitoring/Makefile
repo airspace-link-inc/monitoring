@@ -10,8 +10,7 @@ format:
 unit-test:
 	cd uss_qualifier && make unit_test
 
-image: ../requirements.txt $(shell find . -type f ! -path "*/output/*" ! -name image ! -name *.pyc) $(shell find ../interfaces -type f)
-	# Building image due to changes in the following files: $?
+image: ../uv.lock ../pyproject.toml $(shell find . -type f ! -path "*/output/*" ! -name image ! -name *.pyc) $(shell find ../interfaces -type f)
 	./build.sh
 
 .PHONY: test

@@ -1,16 +1,14 @@
 import datetime
-from typing import List, Optional
 
-import arrow
 import s2sphere
 
 from monitoring.monitorlib.fetch import rid as fetch
 from monitoring.monitorlib.mutate import rid as mutate
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources import VerticesResource
 from monitoring.uss_qualifier.resources.astm.f3411.dss import DSSInstanceResource
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
 from monitoring.uss_qualifier.resources.netrid.service_area import ServiceAreaResource
+from monitoring.uss_qualifier.resources.volume import VolumeResource
 from monitoring.uss_qualifier.scenarios.astm.netrid.common.dss.isa_validator import (
     ISAValidator,
 )
@@ -24,14 +22,14 @@ class ISASimple(GenericTestScenario):
 
     ISA_TYPE = register_resource_type(348, "ISA")
 
-    _huge_are: List[s2sphere.LatLng]
+    _huge_are: list[s2sphere.LatLng]
 
     def __init__(
         self,
         dss: DSSInstanceResource,
         id_generator: IDGeneratorResource,
         isa: ServiceAreaResource,
-        problematically_big_area: VerticesResource,
+        problematically_big_area: VolumeResource,
     ):
         super().__init__()
         self._dss = (
@@ -39,15 +37,14 @@ class ISASimple(GenericTestScenario):
         )  # TODO: delete once _delete_isa_if_exists updated to use dss_wrapper
         self._dss_wrapper = DSSWrapper(self, dss.dss_instance)
         self._isa_id = id_generator.id_factory.make_id(ISASimple.ISA_TYPE)
-        self._isa_version: Optional[str] = None
-        self._isa = isa.specification
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
-        self._huge_area = [
-            v.as_s2sphere() for v in problematically_big_area.specification.vertices
-        ]
+        self._isa_version: str | None = None
+        self._isa = isa
+
+        self._isa_area = isa.s2_vertices()
+        self._huge_area = problematically_big_area.specification.s2_vertices()
 
     def run(self, context: ExecutionContext):
-        self._shift_isa_time_relative_to_now()
+        self._resolve_isa_time_bounds()
 
         self.begin_test_scenario(context)
 
@@ -58,10 +55,10 @@ class ISASimple(GenericTestScenario):
 
         self.end_test_scenario()
 
-    def _shift_isa_time_relative_to_now(self):
-        now = arrow.utcnow().datetime
-        self._isa_start_time = self._isa.shifted_time_start(now)
-        self._isa_end_time = self._isa.shifted_time_end(now)
+    def _resolve_isa_time_bounds(self):
+        self._isa_start_time, self._isa_end_time = self._isa.resolved_time_bounds(
+            self.time_context.evaluate_now()
+        )
 
     def _setup_case(self):
         self.begin_test_case("Setup")

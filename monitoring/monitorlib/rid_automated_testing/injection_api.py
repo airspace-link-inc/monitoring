@@ -1,11 +1,10 @@
 import datetime
-from typing import List, Optional, Tuple
 
 import arrow
 import s2sphere
-from uas_standards.astm.f3411.v22a.api import UASID
 from uas_standards.interuss.automated_testing.rid.v1 import injection
 from uas_standards.interuss.automated_testing.rid.v1.injection import (
+    UASID,
     RIDAircraftState,
     RIDFlightDetails,
     UAType,
@@ -31,8 +30,7 @@ MANDATORY_POSITION_FIELDS = ["lat", "lng", "alt"]
 
 
 class TestFlight(injection.TestFlight):
-
-    raw_telemetry: Optional[List[RIDAircraftState]]
+    raw_telemetry: list[RIDAircraftState] | None
     """Copy of original telemetry with potential invalid data"""
 
     def __init__(self, *args, **kwargs):
@@ -54,7 +52,6 @@ class TestFlight(injection.TestFlight):
             filtered_telemetry = []
 
             for telemetry in self.telemetry:
-
                 is_ok = True
 
                 for mandatory_field in MANDATORY_TELEMETRY_FIELDS:
@@ -66,7 +63,10 @@ class TestFlight(injection.TestFlight):
                     continue
 
                 for mandatory_field in MANDATORY_POSITION_FIELDS:
-                    if telemetry.position.get(mandatory_field, None) is None:
+                    if (
+                        not telemetry.position
+                        or telemetry.position.get(mandatory_field, None) is None
+                    ):
                         is_ok = False
                         break
 
@@ -84,7 +84,6 @@ class TestFlight(injection.TestFlight):
         # if none are present
 
         for detail in self.details_responses:
-
             # Values outside uas_id
             serial_number = detail.details.get("serial_number")
             registration_number = detail.details.get("registration_number")
@@ -96,42 +95,42 @@ class TestFlight(injection.TestFlight):
             ):
                 detail.details.uas_id = UASID()
 
-            if detail.details.uas_id.serial_number:
-                if not serial_number:  # No serial number outside uas_id, we set it
-                    detail.details.serial_number = detail.details.uas_id.serial_number
-                elif serial_number != detail.details.uas_id.serial_number:
-                    raise ValueError(
-                        f"Impossible to validate test flight: details.serial_number ({serial_number}) is not equal to details.uas_id.serial_number ({detail.details.uas_id.serial_number})"
-                    )
-            elif (
-                serial_number
-            ):  # No serial_number is uas_id, but we do have one externally: we do set it in uas_id
-                detail.details.uas_id.serial_number = serial_number
+            if detail.details.uas_id is not None:
+                if detail.details.uas_id.serial_number:
+                    if not serial_number:  # No serial number outside uas_id, we set it
+                        detail.details.serial_number = (
+                            detail.details.uas_id.serial_number
+                        )
+                    elif serial_number != detail.details.uas_id.serial_number:
+                        raise ValueError(
+                            f"Impossible to validate test flight: details.serial_number ({serial_number}) is not equal to details.uas_id.serial_number ({detail.details.uas_id.serial_number})"
+                        )
+                elif serial_number:  # No serial_number is uas_id, but we do have one externally: we do set it in uas_id
+                    detail.details.uas_id.serial_number = serial_number
 
-            if detail.details.uas_id.registration_id:
-                if (
-                    not registration_number
-                ):  # No serial number outside uas_id, we set it
-                    detail.details.registration_number = (
-                        detail.details.uas_id.registration_id
-                    )
-                elif registration_number != detail.details.uas_id.registration_id:
-                    raise ValueError(
-                        f"Impossible to validate test flight: details.registration_number ({registration_number}) is not eqal to details.uas_id.registration_id ({detail.details.uas_id.registration_id})"
-                    )
-            elif (
-                registration_number
-            ):  # No serial_number is uas_id, but we do have one externally: we do set it in uas_id
-                detail.details.uas_id.registration_id = registration_number
+                if detail.details.uas_id.registration_id:
+                    if (
+                        not registration_number
+                    ):  # No serial number outside uas_id, we set it
+                        detail.details.registration_number = (
+                            detail.details.uas_id.registration_id
+                        )
+                    elif registration_number != detail.details.uas_id.registration_id:
+                        raise ValueError(
+                            f"Impossible to validate test flight: details.registration_number ({registration_number}) is not eqal to details.uas_id.registration_id ({detail.details.uas_id.registration_id})"
+                        )
+                elif registration_number:  # No serial_number is uas_id, but we do have one externally: we do set it in uas_id
+                    detail.details.uas_id.registration_id = registration_number
 
     def get_span(
         self,
-    ) -> Tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
+    ) -> tuple[datetime.datetime | None, datetime.datetime | None]:
         earliest = None
         latest = None
         times = [
             arrow.get(aircraft_state.timestamp).datetime
             for aircraft_state in self.telemetry
+            if aircraft_state.timestamp
         ]
         times.extend(
             arrow.get(details.effective_after).datetime
@@ -144,8 +143,8 @@ class TestFlight(injection.TestFlight):
                 latest = t
         return (earliest, latest)
 
-    def get_details(self, t_now: datetime.datetime) -> Optional[RIDFlightDetails]:
-        latest_after: Optional[datetime.datetime] = None
+    def get_details(self, t_now: datetime.datetime) -> RIDFlightDetails | None:
+        latest_after: datetime.datetime | None = None
         tf_details = None
         for response in self.details_responses:
             t_response = arrow.get(response.effective_after).datetime
@@ -155,12 +154,12 @@ class TestFlight(injection.TestFlight):
                     tf_details = response.details
         return tf_details
 
-    def get_id(self, t_now: datetime.datetime) -> Optional[str]:
+    def get_id(self, t_now: datetime.datetime) -> str | None:
         details = self.get_details(t_now)
         return details.id if details else None
 
     def get_aircraft_type(self, rid_version: RIDVersion) -> UAType:
-        if not self.has_field_with_value("aircraft_type"):
+        if not self.has_field_with_value("aircraft_type") or not self.aircraft_type:
             return UAType.NotDeclared
 
         # there exists a small difference in the enums between both versions of RID, this ensures we always return the expected one
@@ -176,26 +175,35 @@ class TestFlight(injection.TestFlight):
 
     def order_telemetry(self):
         self.telemetry = sorted(
-            self.telemetry, key=lambda telemetry: telemetry.timestamp.datetime
+            self.telemetry,
+            key=lambda telemetry: telemetry.timestamp.datetime
+            if telemetry.timestamp
+            else 0,
         )
 
     def select_relevant_states(
         self, view: s2sphere.LatLngRect, t0: datetime.datetime, t1: datetime.datetime
-    ) -> List[RIDAircraftState]:
-        recent_states: List[RIDAircraftState] = []
+    ) -> list[RIDAircraftState]:
+        recent_states: list[RIDAircraftState] = []
         previously_outside = False
         previously_inside = False
         previous_telemetry = None
         for telemetry in self.telemetry:
-            if telemetry.timestamp.datetime < t0 or telemetry.timestamp.datetime > t1:
+            if (
+                not telemetry.timestamp
+                or telemetry.timestamp.datetime < t0
+                or telemetry.timestamp.datetime > t1
+            ):
                 # Telemetry not relevant based on time
+                continue
+            if not telemetry.position:
                 continue
             pt = s2sphere.LatLng.from_degrees(
                 telemetry.position.lat, telemetry.position.lng
             )
             inside_now = view.contains(pt)
             if inside_now:
-                if previously_outside:
+                if previously_outside and previous_telemetry:
                     recent_states.append(previous_telemetry)
                 recent_states.append(telemetry)
                 previously_inside = True
@@ -208,12 +216,16 @@ class TestFlight(injection.TestFlight):
             previous_telemetry = telemetry
         return recent_states
 
-    def get_rect(self) -> Optional[s2sphere.LatLngRect]:
+    def get_rect(self) -> s2sphere.LatLngRect | None:
         return geo.bounding_rect(
-            [(t.position.lat, t.position.lng) for t in self.telemetry]
+            [
+                (t.position.lat, t.position.lng)
+                for t in self.telemetry
+                if t.position and t.position.lat and t.position.lng
+            ]
         )
 
-    def get_mean_update_rate_hz(self) -> Optional[float]:
+    def get_mean_update_rate_hz(self) -> float | None:
         """
         Calculate the mean update rate of the telemetry in Hz
         """
@@ -221,6 +233,9 @@ class TestFlight(injection.TestFlight):
             return None
         # TODO check if required or not (may have been called earlier?)
         self.order_telemetry()
+
+        if not self.telemetry[0].timestamp or not self.telemetry[-1].timestamp:
+            return
         start = self.telemetry[0].timestamp.datetime
         end = self.telemetry[-1].timestamp.datetime
         return (len(self.telemetry) - 1) / (end - start).seconds
@@ -229,20 +244,20 @@ class TestFlight(injection.TestFlight):
 class CreateTestParameters(injection.CreateTestParameters):
     def get_span(
         self,
-    ) -> Tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
+    ) -> tuple[datetime.datetime | None, datetime.datetime | None]:
         if not self.requested_flights:
             return (None, None)
         (earliest, latest) = (None, None)
         for flight in self.requested_flights:
             flight = TestFlight(flight)
             (t0, t1) = flight.get_span()
-            if earliest is None or t0 < earliest:
+            if t0 and (earliest is None or t0 < earliest):
                 earliest = t0
-            if latest is None or t1 > latest:
+            if t1 and (latest is None or t1 > latest):
                 latest = t1
         return (earliest, latest)
 
-    def get_rect(self) -> Optional[s2sphere.LatLngRect]:
+    def get_rect(self) -> s2sphere.LatLngRect | None:
         result = None
         for flight in self.requested_flights:
             flight = TestFlight(flight)

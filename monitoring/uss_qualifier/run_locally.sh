@@ -34,6 +34,7 @@ configurations.dev.message_signing,\
 configurations.dev.minimal_probing,\
 configurations.dev.dss_probing,\
 configurations.dev.f3548_self_contained,\
+configurations.dev.utm_implementation_us.environments.local.test_1,\
 configurations.dev.netrid_v22a,\
 configurations.dev.netrid_v19,\
 configurations.dev.uspace"
@@ -83,4 +84,4 @@ docker run ${docker_args} --name uss_qualifier \
   -v "$(pwd)/$CACHE_DIR:/app/$CACHE_DIR" \
   -w /app/monitoring/uss_qualifier \
   interuss/monitoring \
-  python main.py $QUALIFIER_OPTIONS
+  uv run main.py $QUALIFIER_OPTIONS

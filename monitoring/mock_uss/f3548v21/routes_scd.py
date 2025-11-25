@@ -1,23 +1,31 @@
 import json
 import uuid
-from typing import Optional
 
+import arrow
 import flask
-from implicitdict import ImplicitDict
+from implicitdict import ImplicitDict, StringBasedDateTime
 from loguru import logger
 from uas_standards.astm.f3548.v21.api import (
     ErrorReport,
     ErrorResponse,
     GetOperationalIntentDetailsResponse,
-    GetOperationalIntentTelemetryResponse,
     OperationalIntentState,
+    PutOperationalIntentDetailsParameters,
 )
 
-from monitoring.mock_uss import webapp
+from monitoring.mock_uss.app import webapp
 from monitoring.mock_uss.auth import requires_scope
-from monitoring.mock_uss.f3548v21.flight_planning import op_intent_from_flightrecord
+from monitoring.mock_uss.f3548v21.flight_planning import (
+    conflicts_with_flightrecords,
+    op_intent_from_flightrecord,
+)
 from monitoring.mock_uss.flights.database import FlightRecord, db
+from monitoring.mock_uss.user_interactions.notifications import (
+    UserNotification,
+    UserNotificationType,
+)
 from monitoring.monitorlib import scd
+from monitoring.monitorlib.clients.flight_planning.planning import Conflict
 
 
 @webapp.route("/mock/scd/uss/v1/operational_intents/<entityid>", methods=["GET"])
@@ -38,9 +46,7 @@ def scdsc_get_operational_intent_details(entityid: str):
         return (
             flask.jsonify(
                 ErrorResponse(
-                    message="Operational intent {} not known by this USS".format(
-                        entityid
-                    )
+                    message=f"Operational intent {entityid} not known by this USS"
                 )
             ),
             404,
@@ -62,7 +68,7 @@ def scdsc_get_operational_intent_telemetry(entityid: str):
 
     # Look up entityid in database
     tx = db.value
-    flight: Optional[FlightRecord] = None
+    flight: FlightRecord | None = None
     for f in tx.flights.values():
         if f and f.op_intent.reference.id == entityid:
             flight = f
@@ -73,9 +79,7 @@ def scdsc_get_operational_intent_telemetry(entityid: str):
         return (
             flask.jsonify(
                 ErrorResponse(
-                    message="Operational intent {} not known by this USS".format(
-                        entityid
-                    )
+                    message=f"Operational intent {entityid} not known by this USS"
                 )
             ),
             404,
@@ -110,8 +114,34 @@ def scdsc_get_operational_intent_telemetry(entityid: str):
 def scdsc_notify_operational_intent_details_changed():
     """Implements notifyOperationalIntentDetailsChanged in ASTM SCD API."""
 
-    # Do nothing because this USS is unsophisticated and polls the DSS for every
-    # change in its operational intents
+    # Parse the notification payload
+    try:
+        op_intent_data: PutOperationalIntentDetailsParameters = ImplicitDict.parse(
+            flask.request.json or {}, PutOperationalIntentDetailsParameters
+        )
+    except ValueError as e:
+        return (
+            flask.jsonify(ErrorResponse(message=f"Error parsing request: {str(e)}")),
+            400,
+        )
+
+    if "operational_intent" in op_intent_data and op_intent_data.operational_intent:
+        # An op intent is being created or modified; check if it conflicts with any flights we're managing
+        with db.transact() as tx:
+            if conflicts_with_flightrecords(
+                op_intent_data.operational_intent, list(tx.value.flights.values())
+            ):
+                # Virtually notify user that another op intent conflicts with their flight
+                tx.value.flight_planning_notifications.append(
+                    UserNotification(
+                        type=UserNotificationType.DetectedConflict,
+                        observed_at=StringBasedDateTime(arrow.utcnow().datetime),
+                        conflicts=Conflict.Single,  # TODO: detect multiple conflicts
+                    )
+                )
+
+    # Do nothing else because this USS is unsophisticated and polls the DSS for
+    # every change in its operational intents
     return "", 204
 
 

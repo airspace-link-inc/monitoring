@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import Optional
 
 from uas_standards.astm.f3548.v21.api import (
     EntityID,
@@ -11,15 +10,11 @@ from uas_standards.astm.f3548.v21.api import (
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.fetch import QueryError
-from monitoring.monitorlib.geotemporal import Volume4D
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstance,
     DSSInstanceResource,
-)
-from monitoring.uss_qualifier.resources.astm.f3548.v21.planning_area import (
-    PlanningAreaSpecification,
 )
 from monitoring.uss_qualifier.resources.communications import ClientIdentityResource
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
@@ -27,7 +22,10 @@ from monitoring.uss_qualifier.scenarios.astm.utm.dss import test_step_fragments
 from monitoring.uss_qualifier.scenarios.astm.utm.dss.fragments.oir import (
     crud as oir_fragments,
 )
-from monitoring.uss_qualifier.scenarios.scenario import TestScenario
+from monitoring.uss_qualifier.scenarios.astm.utm.dss.validators.oir_validator import (
+    OIRValidator,
+)
+from monitoring.uss_qualifier.scenarios.scenario import PendingCheck, TestScenario
 from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
@@ -47,10 +45,10 @@ class OIRSimple(TestScenario):
     _oir_id: EntityID
 
     # Keep track of the current OIR state
-    _current_oir: Optional[OperationalIntentReference]
+    _current_oir: OperationalIntentReference | None
+    _current_oir_params: PutOperationalIntentReferenceParameters | None
     _expected_manager: str
-    _planning_area: PlanningAreaSpecification
-    _planning_area_volume4d: Volume4D
+    _planning_area: PlanningAreaResource
 
     def __init__(
         self,
@@ -79,11 +77,7 @@ class OIRSimple(TestScenario):
 
         self._expected_manager = client_identity.subject()
 
-        self._planning_area = planning_area.specification
-
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
-        )
+        self._planning_area = planning_area
 
     def run(self, context: ExecutionContext):
         self.begin_test_scenario(context)
@@ -115,7 +109,6 @@ class OIRSimple(TestScenario):
         self.end_test_scenario()
 
     def _step_attempt_delete_missing_ovn(self):
-
         self.begin_test_step("Attempt deletion with missing OVN")
 
         with self.check(
@@ -146,7 +139,6 @@ class OIRSimple(TestScenario):
         self.end_test_step()
 
     def _step_attempt_delete_incorrect_ovn(self):
-
         self.begin_test_step("Attempt deletion with incorrect OVN")
 
         with self.check(
@@ -178,7 +170,6 @@ class OIRSimple(TestScenario):
         self.end_test_step()
 
     def _step_attempt_mutation_missing_ovn(self):
-
         self.begin_test_step("Attempt mutation with missing OVN")
 
         oir_params = self._test_params_for_current_time()
@@ -216,7 +207,6 @@ class OIRSimple(TestScenario):
         self.end_test_step()
 
     def _step_attempt_mutation_incorrect_ovn(self):
-
         self.begin_test_step("Attempt mutation with incorrect OVN")
 
         oir_params = self._test_params_for_current_time()
@@ -253,35 +243,59 @@ class OIRSimple(TestScenario):
         self.end_test_step()
 
     def _step_attempt_mutation_correct_ovn(self):
-
         self.begin_test_step("Attempt mutation with correct OVN")
 
-        oir_params = self._test_params_for_current_time()
-        oir_params.uss_base_url = oir_params.uss_base_url + "?correct-ovn-mutation=true"
-        self._current_oir, _, _ = oir_fragments.update_oir_query(
+        self._current_oir_params = self._test_params_for_current_time()
+        self._current_oir_params.uss_base_url = (
+            self._current_oir_params.uss_base_url + "?correct-ovn-mutation=true"
+        )
+        mutated_oir, _, q = oir_fragments.update_oir_query(
             scenario=self,
             dss=self._dss,
             oir_id=self._oir_id,
-            oir_params=oir_params,
+            oir_params=self._current_oir_params,
             ovn=self._current_oir.ovn,
         )
+
+        with self.check(
+            "Mutate operational intent reference response content is correct", self._pid
+        ) as check:
+            self._oir_validator(check).validate_mutated_oir(
+                self._oir_id, q, self._current_oir.ovn, self._current_oir.version
+            )
+
+        self._current_oir = mutated_oir
 
         self.end_test_step()
 
     def _step_create_oir(self):
         self.begin_test_step("Create OIR")
-        self._current_oir, _, _ = oir_fragments.create_oir_query(
+        self._current_oir_params = self._default_oir_params(subscription_id=None)
+        self._current_oir, _, q = oir_fragments.create_oir_query(
             scenario=self,
             dss=self._dss,
             oir_id=self._oir_id,
-            oir_params=self._default_oir_params(subscription_id=None),
+            oir_params=self._current_oir_params,
         )
+        with self.check(
+            "Create operational intent reference response content is correct", self._pid
+        ) as check:
+            self._oir_validator(check).validate_created_oir(self._oir_id, q)
         self.end_test_step()
 
     def _delete_oir(self, oir_id: EntityID, ovn: str):
-        oir_fragments.delete_oir_query(
+        del_oir, _, q = oir_fragments.delete_oir_query(
             scenario=self, dss=self._dss, oir_id=oir_id, ovn=ovn
         )
+
+        with self.check(
+            "Delete operational intent reference response content is correct", self._pid
+        ) as check:
+            self._oir_validator(check).validate_deleted_oir(
+                oir_id, q, ovn, self._current_oir.version
+            )
+
+        self._current_oir_params = None
         self._current_oir = None
 
     def _step_delete_oir(self, is_cleanup: bool = True):
@@ -299,10 +313,11 @@ class OIRSimple(TestScenario):
 
     def _clean_all_oirs(self):
         # Delete any active OIR we might own
+        vol = self._planning_area.resolved_volume4d_with_times(None, None)
         test_step_fragments.cleanup_active_oirs(
             self,
             self._dss,
-            self._planning_area_volume4d.to_f3548v21(),
+            vol.to_f3548v21(),
             self._expected_manager,
         )
 
@@ -320,20 +335,29 @@ class OIRSimple(TestScenario):
         return self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=datetime.now() - timedelta(seconds=10),
             time_end=datetime.now() + timedelta(minutes=20),
             subscription_id=None,
         )
 
     def _default_oir_params(
-        self, subscription_id: SubscriptionID
+        self, subscription_id: SubscriptionID | None
     ) -> PutOperationalIntentReferenceParameters:
         return self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=datetime.now() - timedelta(seconds=10),
             time_end=datetime.now() + timedelta(minutes=20),
             subscription_id=subscription_id,
+        )
+
+    def _oir_validator(self, main_check: PendingCheck) -> OIRValidator:
+        return OIRValidator(
+            main_check=main_check,
+            scenario=self,
+            expected_manager=self._expected_manager,
+            participant_id=self._pid,
+            oir_params=self._current_oir_params,
         )

@@ -1,10 +1,12 @@
-from typing import Dict, Optional, Tuple
-
 import arrow
 from uas_standards.astm.f3548.v21.api import OperationalIntentReference
-from uas_standards.astm.f3548.v21.constants import Scope
+from uas_standards.astm.f3548.v21.constants import (
+    Scope,
+)
 
-from monitoring.monitorlib.clients.flight_planning.client import FlightPlannerClient
+from monitoring.monitorlib.clients.flight_planning.client import (
+    FlightPlannerClient,
+)
 from monitoring.monitorlib.clients.flight_planning.flight_info import (
     AirspaceUsageState,
     FlightInfo,
@@ -16,7 +18,6 @@ from monitoring.monitorlib.clients.flight_planning.flight_info_template import (
 from monitoring.monitorlib.clients.flight_planning.planning import (
     PlanningActivityResult,
 )
-from monitoring.monitorlib.temporal import Time, TimeDuringTest
 from monitoring.uss_qualifier.resources.astm.f3548.v21 import DSSInstanceResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import DSSInstance
 from monitoring.uss_qualifier.resources.flight_planning import FlightIntentsResource
@@ -26,6 +27,9 @@ from monitoring.uss_qualifier.resources.flight_planning.flight_intent_validation
 )
 from monitoring.uss_qualifier.resources.flight_planning.flight_planners import (
     FlightPlannerResource,
+)
+from monitoring.uss_qualifier.scenarios.astm.utm.notifications_to_operator.notification_checker import (
+    NotificationChecker,
 )
 from monitoring.uss_qualifier.scenarios.astm.utm.test_steps import OpIntentValidator
 from monitoring.uss_qualifier.scenarios.flight_planning.prioritization_test_steps import (
@@ -45,18 +49,15 @@ from monitoring.uss_qualifier.scenarios.scenario import TestScenario
 from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
-class ConflictHigherPriority(TestScenario):
-
-    times: Dict[TimeDuringTest, Time]
-
-    flight1_id: Optional[str] = None
+class ConflictHigherPriority(TestScenario, NotificationChecker):
+    flight1_id: str | None = None
     flight1_planned: FlightInfoTemplate
     flight1m_planned: FlightInfoTemplate
     flight1_activated: FlightInfoTemplate
     flight1m_activated: FlightInfoTemplate
     flight1c_activated: FlightInfoTemplate
 
-    flight2_id: Optional[str] = None
+    flight2_id: str | None = None
     flight2_planned: FlightInfoTemplate
     flight2_activated: FlightInfoTemplate
     flight2m_activated: FlightInfoTemplate
@@ -158,15 +159,9 @@ class ConflictHigherPriority(TestScenario):
             setattr(self, efi.intent_id, templates[efi.intent_id])
 
     def resolve_flight(self, flight_template: FlightInfoTemplate) -> FlightInfo:
-        self.times[TimeDuringTest.TimeOfEvaluation] = Time(arrow.utcnow().datetime)
-        return flight_template.resolve(self.times)
+        return flight_template.resolve(self.time_context.evaluate_now())
 
     def run(self, context: ExecutionContext):
-        self.times = {
-            TimeDuringTest.StartOfTestRun: Time(context.start_time),
-            TimeDuringTest.StartOfScenario: Time(arrow.utcnow().datetime),
-        }
-
         self.begin_test_scenario(context)
 
         self.record_note(
@@ -253,7 +248,7 @@ class ConflictHigherPriority(TestScenario):
 
     def _attempt_modify_planned_flight_conflict(
         self,
-    ) -> Tuple[Optional[OperationalIntentReference], FlightInfo]:
+    ) -> tuple[OperationalIntentReference | None, FlightInfo]:
         self.begin_test_step("Plan Flight 1")
         flight1_planned = self.resolve_flight(self.flight1_planned)
 
@@ -272,6 +267,9 @@ class ConflictHigherPriority(TestScenario):
         self.end_test_step()
 
         self.begin_test_step("Plan Flight 2")
+        preexisting_notifications = self._get_preexisting_notifications(
+            [self.control_uss, self.tested_uss]
+        )
         flight2_planned = self.resolve_flight(self.flight2_planned)
 
         with OpIntentValidator(
@@ -280,12 +278,24 @@ class ConflictHigherPriority(TestScenario):
             self.dss,
             flight2_planned,
         ) as validator:
+            earliest_creation_time = arrow.utcnow().datetime
             _, self.flight2_id = plan_flight(
                 self,
                 self.control_uss,
                 flight2_planned,
             )
+            latest_creation_time = arrow.utcnow().datetime
             validator.expect_shared(flight2_planned)
+        self.end_test_step()
+
+        self.begin_test_step("Check for conflict notifications")
+        self._check_for_user_notifications(
+            causing_conflict=self.control_uss,
+            observing_conflict=self.tested_uss,
+            preexisting_notifications=preexisting_notifications,
+            earliest_action_time=earliest_creation_time,
+            latest_action_time=latest_creation_time,
+        )
         self.end_test_step()
 
         self.begin_test_step("Attempt to modify planned Flight 1 in conflict")
@@ -313,9 +323,9 @@ class ConflictHigherPriority(TestScenario):
 
     def _attempt_activate_flight_conflict(
         self,
-        flight_1_oi_ref: Optional[OperationalIntentReference],
+        flight_1_oi_ref: OperationalIntentReference | None,
         flight_1_intent: FlightInfo,
-    ) -> Optional[OperationalIntentReference]:
+    ) -> OperationalIntentReference | None:
         self.begin_test_step("Attempt to activate conflicting Flight 1")
         flight1_activated = self.resolve_flight(self.flight1_activated)
 
@@ -340,8 +350,8 @@ class ConflictHigherPriority(TestScenario):
         return flight_1_oi_ref
 
     def _modify_activated_flight_conflict_preexisting(
-        self, flight_1_oi_ref: Optional[OperationalIntentReference]
-    ) -> Tuple[FlightInfo, OperationalIntentReference, OperationalIntentReference]:
+        self, flight_1_oi_ref: OperationalIntentReference | None
+    ) -> tuple[FlightInfo, OperationalIntentReference, OperationalIntentReference]:
         self.begin_test_step("Delete Flight 2")
         _ = delete_flight(self, self.control_uss, self.flight2_id)
         self.flight2_id = None
@@ -384,6 +394,9 @@ class ConflictHigherPriority(TestScenario):
         self.end_test_step()
 
         self.begin_test_step("Activate Flight 2")
+        preexisting_notifications = self._get_preexisting_notifications(
+            [self.control_uss, self.tested_uss]
+        )
         flight2_activated = self.resolve_flight(self.flight2_activated)
 
         with OpIntentValidator(
@@ -393,13 +406,25 @@ class ConflictHigherPriority(TestScenario):
             flight2_activated,
             flight_2_oi_ref,
         ) as validator:
+            earliest_activation_time = arrow.utcnow().datetime
             activate_flight(
                 self,
                 self.control_uss,
                 flight2_activated,
                 self.flight2_id,
             )
+            latest_activation_time = arrow.utcnow().datetime
             flight_2_oi_ref = validator.expect_shared(flight2_activated)
+        self.end_test_step()
+
+        self.begin_test_step("Check for conflict notifications")
+        self._check_for_user_notifications(
+            causing_conflict=self.control_uss,
+            observing_conflict=self.tested_uss,
+            preexisting_notifications=preexisting_notifications,
+            earliest_action_time=earliest_activation_time,
+            latest_action_time=latest_activation_time,
+        )
         self.end_test_step()
 
         self.begin_test_step(
@@ -449,14 +474,22 @@ class ConflictHigherPriority(TestScenario):
             flight2m_activated,
             flight_2_oi_ref,
         ) as validator:
-            modify_activated_flight(
+            resp = modify_activated_flight(
                 self,
                 self.control_uss,
                 flight2m_activated,
                 self.flight2_id,
             )
-            validator.expect_shared(flight2m_activated)
+            if resp.activity_result == PlanningActivityResult.Completed:
+                validator.expect_shared(flight2m_activated)
         self.end_test_step()
+
+        if resp.activity_result == PlanningActivityResult.NotSupported:
+            self.record_note(
+                "conflict_higher_priority_skip_step",
+                f"Skip next step since USS {self.control_uss} did not modify flight 2.",
+            )
+            return
 
         self.begin_test_step("Attempt to modify activated Flight 1 in conflict")
         flight1c_activated = self.resolve_flight(self.flight1c_activated)
@@ -474,10 +507,7 @@ class ConflictHigherPriority(TestScenario):
                 flight1c_activated,
                 self.flight1_id,
             )
-            validator.expect_shared(
-                flight_1_intent,
-                skip_if_not_found=True,
-            )
+            validator.expect_not_shared()
         self.end_test_step()
 
     def cleanup(self):

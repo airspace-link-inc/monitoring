@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import List
 
 from uas_standards.astm.f3548.v21.api import (
     OperationalIntentReference,
@@ -9,10 +8,9 @@ from uas_standards.astm.f3548.v21.api import (
 from uas_standards.astm.f3548.v21.constants import Scope
 from uuid6 import uuid6, uuid7
 
-from monitoring.monitorlib import geotemporal
 from monitoring.monitorlib.fetch import QueryError
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import DSSInstanceResource
 from monitoring.uss_qualifier.resources.communications import ClientIdentityResource
 from monitoring.uss_qualifier.resources.interuss import IDGeneratorResource
@@ -47,7 +45,7 @@ class DSSOVNRequest(TestScenario):
         )
 
         self._oir_id = id_generator.id_factory.make_id(OIR_TYPE)
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
         self._expected_manager = client_identity.subject()
 
     def run(self, context: ExecutionContext):
@@ -56,7 +54,7 @@ class DSSOVNRequest(TestScenario):
 
         now = datetime.now()
         extents = [
-            self._planning_area.get_volume4d(
+            self._planning_area.resolved_volume4d_with_times(
                 now - timedelta(seconds=10),
                 now + timedelta(minutes=45),
             ).to_f3548v21()
@@ -109,7 +107,7 @@ class DSSOVNRequest(TestScenario):
         self.end_test_scenario()
 
     def _create_oir(
-        self, extents: List[Volume4D], req_ovn_suffix: str
+        self, extents: list[Volume4D], req_ovn_suffix: str
     ) -> OperationalIntentReference:
         with self.check(
             "Create operational intent reference query succeeds",
@@ -120,7 +118,7 @@ class DSSOVNRequest(TestScenario):
                     extents=extents,
                     key=[],
                     state=OperationalIntentState.Accepted,
-                    base_url=self._planning_area.get_base_url(),
+                    base_url=self._planning_area.specification.get_base_url(),
                     oi_id=self._oir_id,
                     ovn=None,
                     requested_ovn_suffix=req_ovn_suffix,
@@ -136,7 +134,7 @@ class DSSOVNRequest(TestScenario):
 
         return oir
 
-    def _activate_oir(self, extents: List[Volume4D], ovn: str, req_ovn_suffix: str):
+    def _activate_oir(self, extents: list[Volume4D], ovn: str, req_ovn_suffix: str):
         with self.check(
             "Mutate operational intent reference query succeeds",
             [self._dss.participant_id],
@@ -146,7 +144,7 @@ class DSSOVNRequest(TestScenario):
                     extents=extents,
                     key=[],
                     state=OperationalIntentState.Activated,
-                    base_url=self._planning_area.get_base_url(),
+                    base_url=self._planning_area.specification.get_base_url(),
                     oi_id=self._oir_id,
                     ovn=ovn,
                     requested_ovn_suffix=req_ovn_suffix,
@@ -162,7 +160,7 @@ class DSSOVNRequest(TestScenario):
 
         return oir
 
-    def _create_invalid_oir_attempt(self, extents: List[Volume4D], req_ovn_suffix: str):
+    def _create_invalid_oir_attempt(self, extents: list[Volume4D], req_ovn_suffix: str):
         with self.check(
             "Attempt to create OIR with invalid requested OVN suffix query rejected",
             [self._dss.participant_id],
@@ -172,7 +170,7 @@ class DSSOVNRequest(TestScenario):
                     extents=extents,
                     key=[],
                     state=OperationalIntentState.Accepted,
-                    base_url=self._planning_area.get_base_url(),
+                    base_url=self._planning_area.specification.get_base_url(),
                     oi_id=self._oir_id,
                     ovn=None,
                     requested_ovn_suffix=req_ovn_suffix,
@@ -208,9 +206,7 @@ class DSSOVNRequest(TestScenario):
         self.begin_test_case("Setup")
 
         self.begin_test_step("Ensure clean workspace")
-        vol = geotemporal.Volume4D(
-            volume=self._planning_area.volume,
-        ).to_f3548v21()
+        vol = self._planning_area.resolved_volume4d_with_times(None, None).to_f3548v21()
 
         test_step_fragments.cleanup_active_oirs(
             self,

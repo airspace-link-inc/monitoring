@@ -1,6 +1,5 @@
 import itertools
 
-from monitoring.monitorlib.testing import make_fake_url
 from monitoring.uss_qualifier.resources.dev.noop import NoOpResource, NoOpSpecification
 from monitoring.uss_qualifier.resources.resource import MissingResourceError
 from monitoring.uss_qualifier.scenarios.scenario import (
@@ -13,9 +12,6 @@ from monitoring.uss_qualifier.scenarios.scenario import (
 from monitoring.uss_qualifier.scenarios.scenario import TestScenario as _TestScenario
 from monitoring.uss_qualifier.scenarios.scenario import (
     TestScenarioDeclaration as _TestScenarioDeclaration,
-)
-from monitoring.uss_qualifier.scenarios.scenario import (
-    TestStepDocumentation as _TestStepDocumentation,
 )
 
 from .generic_test_scenario_without_cleanup import (
@@ -63,7 +59,6 @@ def test_make_test_scenario_base():
     """Test the scenario returned by make_test_scenario in the normal case"""
 
     with InjectFakeScenariosModule():
-
         declaration = _TestScenarioDeclaration(
             scenario_type="scenarios.test.TestScenarioA"
         )
@@ -89,7 +84,6 @@ def test_make_test_scenario_missing_resource():
     """Test that make_test_scenario is raising exceptions when resources are missing"""
 
     with InjectFakeScenariosModule():
-
         declaration = _TestScenarioDeclaration(
             scenario_type="scenarios.test.TestScenarioA"
         )
@@ -105,7 +99,6 @@ def test_make_test_scenario_resource():
     """Test the make_test_scenario method process resources correctly"""
 
     with InjectFakeScenariosModule():
-
         declaration = _TestScenarioDeclaration(
             scenario_type="scenarios.test.TestScenarioA"
         )
@@ -206,7 +199,6 @@ def test_state_machine():
     ]
 
     for call_order in itertools.permutations(possible_calls, len(possible_calls)):
-
         gtsi = _build_generic_test_scenario_instance()
         failled = False
 
@@ -389,77 +381,6 @@ def test_begin_test_step_unkown():
         )
 
 
-def test_begin_dynamic_test_step():
-    """Test the begin_dynamic_test_step base case"""
-
-    gtsi = _build_generic_test_scenario_instance()
-
-    doc = _TestStepDocumentation(name="test-doc", checks=[])
-
-    # Test that we must run begin_test_scenario and begin_test_case first
-    try:
-        gtsi.begin_dynamic_test_step(doc)
-        assert False  # RuntimeError should have been called
-    except RuntimeError as e:
-        assert_runtime_is_state_error(e)
-
-    gtsi.begin_test_scenario(build_context())
-
-    try:
-        gtsi.begin_dynamic_test_step(doc)
-        assert False  # RuntimeError should have been called
-    except RuntimeError as e:
-        assert_runtime_is_state_error(e)
-
-    gtsi.begin_test_case("test-case-1")
-
-    gtsi.begin_dynamic_test_step(doc)
-
-
-def test_begin_dynamic_test_step_twice():
-    """Test that begin_dynamic_test_step cannot be called twice"""
-
-    gtsi = _build_generic_test_scenario_instance()
-    doc = _TestStepDocumentation(name="test-doc", checks=[])
-    gtsi.begin_test_scenario(build_context())
-    gtsi.begin_test_case("test-case-1")
-    gtsi.begin_dynamic_test_step(doc)
-
-    try:
-        gtsi.begin_dynamic_test_step(doc)
-        assert False  # RuntimeError should have been called
-    except RuntimeError as e:
-        assert_runtime_is_state_error(e)
-
-
-def test_begin_dynamic_test_step_after_ending():
-    """Test that begin_dynamic_test_step can be called again after ending the step"""
-
-    gtsi = _build_generic_test_scenario_instance()
-    doc = _TestStepDocumentation(name="test-doc", checks=[])
-    advance_new_gtsi_to_case(gtsi)
-    gtsi.begin_dynamic_test_step(doc)
-    gtsi.end_test_step()
-    gtsi.begin_dynamic_test_step(doc)
-
-
-def test_begin_dynamic_test_step_no_test_step():
-    """Test that begin_dynamic_test_step can be called again after ending the step"""
-
-    gtsi = _build_generic_test_scenario_instance()
-    doc = _TestStepDocumentation(name="test-doc", checks=[])
-    gtsi.begin_test_scenario(build_context())
-    gtsi.begin_test_case("test-case-2")  # Test case 2 has no dynamic test step
-    try:
-        gtsi.begin_dynamic_test_step(doc)
-        assert False  # RuntimeError should have been called
-    except RuntimeError as e:
-        assert (
-            'was instructed to begin_dynamic_test_step "test-doc" during test case "test-case-2", but there is no "Dynamic test step" declared in documentation'
-            in str(e)
-        )
-
-
 def test_end_test_step():
     """Test end_test_step in the basic case"""
 
@@ -506,18 +427,6 @@ def test_end_test_step_twice():
         assert_runtime_is_state_error(e)
 
 
-def test_end_test_step_after_dynamic_test():
-    """Ensure that end_test_step also works with dynamic test steps"""
-
-    gtsi = _build_generic_test_scenario_instance()
-    advance_new_gtsi_to_case(gtsi)
-
-    doc = _TestStepDocumentation(name="test-doc", checks=[], url=make_fake_url())
-
-    gtsi.begin_dynamic_test_step(doc)
-    gtsi.end_test_step()
-
-
 def test_end_test_step_report():
     """Ensure end_test_step is returning a report about the test step"""
 
@@ -534,23 +443,6 @@ def test_end_test_step_report():
     assert_date_is_close_to_now(report.start_time.datetime)
     assert report.end_time
     assert_date_is_close_to_now(report.end_time.datetime)
-
-
-def test_end_test_step_report_on_dynamic_steps():
-    """Ensure end_test_step is returning a report about the test step"""
-
-    gtsi = _build_generic_test_scenario_instance()
-    advance_new_gtsi_to_case(gtsi)
-
-    url = make_fake_url()
-
-    doc = _TestStepDocumentation(name="test-doc", checks=[], url=url)
-
-    # We expect the TestStepDocumentation's URL to be returned in the report.
-    # We use the begin_dynamic_test_step to directly inject the testing doc
-    gtsi.begin_dynamic_test_step(doc)
-    report = gtsi.end_test_step()
-    assert report.documentation_url == url
 
 
 def test_end_test_case():
@@ -639,7 +531,6 @@ def test_go_to_cleanup():
     ]
 
     for steps_to_do in range(1, len(steps_and_result) + 1):
-
         steps_and_result_to_test = steps_and_result[:steps_to_do]
 
         gtsi = _build_generic_test_scenario_instance()
@@ -921,7 +812,6 @@ def test_get_report_state_machine():
     steps = FINISHED_TEST_STEPS
 
     for steps_to_do in range(1, len(steps) + 1):
-
         gtsi = _build_generic_test_scenario_instance()
         run_a_set_of_calls_on_gtsi(gtsi, steps[:steps_to_do])
 
@@ -976,7 +866,6 @@ def test_record_execution_error_during_flow():
     steps = FINISHED_TEST_STEPS
 
     for steps_to_do in range(1, len(steps) + 1):
-
         gtsi = _build_generic_test_scenario_instance()
         run_a_set_of_calls_on_gtsi(gtsi, steps[:steps_to_do])
 
@@ -990,7 +879,6 @@ def test_record_execution_error_during_flow():
                     in str(e)
                 )
         else:
-
             gtsi.record_execution_error(ErrorForTests("test-exception"))
             report = gtsi.get_report()
 
@@ -1178,7 +1066,6 @@ def test_record_note_state_machine():
     steps = FINISHED_TEST_STEPS
 
     for steps_to_do in range(1, len(steps) + 1):
-
         gtsi = _build_generic_test_scenario_instance()
         run_a_set_of_calls_on_gtsi(gtsi, steps[:steps_to_do])
 
@@ -1617,7 +1504,6 @@ def test_stop_fast_enabled():
     gtsi.begin_test_step("test-step-1-1")
 
     with HideLogOutput():
-
         with gtsi.check("test-check-1-1-2-low") as check:
             check.record_failed("")
         try:

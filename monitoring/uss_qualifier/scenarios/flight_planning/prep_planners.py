@@ -1,5 +1,4 @@
 from datetime import timedelta
-from typing import Dict, List, Optional
 
 import arrow
 
@@ -8,7 +7,7 @@ from monitoring.monitorlib.clients.flight_planning.client import (
     PlanningActivityError,
 )
 from monitoring.monitorlib.geotemporal import Volume4D, Volume4DCollection
-from monitoring.monitorlib.temporal import Time, TimeDuringTest
+from monitoring.monitorlib.temporal import TestTimeContext, Time
 from monitoring.uss_qualifier.configurations.configuration import ParticipantID
 from monitoring.uss_qualifier.resources.flight_planning import (
     FlightIntentsResource,
@@ -22,23 +21,23 @@ MAX_TEST_DURATION = timedelta(minutes=45)
 
 
 class PrepareFlightPlannersScenario(TestScenario):
-    areas: List[Volume4D]
-    flight_planners: Dict[ParticipantID, FlightPlannerClient]
+    areas: list[Volume4D]
+    flight_planners: dict[ParticipantID, FlightPlannerClient]
 
     def __init__(
         self,
         flight_planners: FlightPlannersResource,
         flight_intents: FlightIntentsResource,
-        mock_uss: Optional[MockUSSResource] = None,
-        flight_intents2: Optional[FlightIntentsResource] = None,
-        flight_intents3: Optional[FlightIntentsResource] = None,
-        flight_intents4: Optional[FlightIntentsResource] = None,
+        mock_uss: MockUSSResource | None = None,
+        flight_intents2: FlightIntentsResource | None = None,
+        flight_intents3: FlightIntentsResource | None = None,
+        flight_intents4: FlightIntentsResource | None = None,
     ):
         super().__init__()
         now = Time(arrow.utcnow().datetime)
-        times_now = {t: now for t in TimeDuringTest}
+        times_now = TestTimeContext.all_times_are(now)
         later = now.offset(MAX_TEST_DURATION)
-        times_later = {t: later for t in TimeDuringTest}
+        times_later = TestTimeContext.all_times_are(later)
         self.areas = []
         for intents in (
             flight_intents,

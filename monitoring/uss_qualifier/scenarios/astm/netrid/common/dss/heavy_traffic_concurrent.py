@@ -1,9 +1,8 @@
 import asyncio
 import typing
 from datetime import UTC, datetime
-from typing import Dict, List
 
-import arrow
+import aiohttp
 import requests
 from uas_standards.astm.f3411 import v19, v22a
 
@@ -11,6 +10,7 @@ from monitoring.monitorlib.fetch import (
     Query,
     QueryType,
     describe_aiohttp_response,
+    describe_failed_aiohttp_response,
     describe_request,
 )
 from monitoring.monitorlib.fetch.rid import FetchedISA
@@ -44,11 +44,11 @@ class HeavyTrafficConcurrent(GenericTestScenario):
 
     ISA_TYPE = register_resource_type(374, "ISA")
 
-    _isa_ids: List[str]
+    _isa_ids: list[str]
 
-    _isa_params: Dict[str, any]
+    _isa_params: dict[str, any]
 
-    _isa_versions: Dict[str, str]
+    _isa_versions: dict[str, str]
 
     _async_session: AsyncUTMTestSession
 
@@ -64,9 +64,9 @@ class HeavyTrafficConcurrent(GenericTestScenario):
         )  # TODO: delete once _delete_isa_if_exists updated to use dss_wrapper
         self._dss_wrapper = DSSWrapper(self, dss.dss_instance)
 
-        self._isa_versions: Dict[str, str] = {}
-        self._isa = isa.specification
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
+        self._isa_versions: dict[str, str] = {}
+        self._isa = isa
+        self._isa_area = isa.s2_vertices()
 
         # Note that when the test scenario ends prematurely, we may end up with an unclosed session.
         self._async_session = AsyncUTMTestSession(
@@ -89,7 +89,7 @@ class HeavyTrafficConcurrent(GenericTestScenario):
         )
 
     def run(self, context: ExecutionContext):
-        self._shift_isa_time_relative_to_now()
+        self._resolve_isa_time_bounds()
 
         self.begin_test_scenario(context)
 
@@ -128,10 +128,10 @@ class HeavyTrafficConcurrent(GenericTestScenario):
         self.end_test_case()
         self.end_test_scenario()
 
-    def _shift_isa_time_relative_to_now(self):
-        now = arrow.utcnow().datetime
-        self._isa_params["start_time"] = self._isa.shifted_time_start(now)
-        self._isa_params["end_time"] = self._isa.shifted_time_end(now)
+    def _resolve_isa_time_bounds(self):
+        start, end = self._isa.resolved_time_bounds(self.time_context.evaluate_now())
+        self._isa_params["start_time"] = start
+        self._isa_params["end_time"] = end
 
     def _delete_isas_if_exists(self):
         """Delete test ISAs if they exist. Done sequentially."""
@@ -150,7 +150,7 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             asyncio.gather(*[self._get_isa(isa_id) for isa_id in self._isa_ids])
         )
 
-        results = typing.cast(Dict[str, FetchedISA], results)
+        results = typing.cast(dict[str, FetchedISA], results)
 
         for _, fetched_isa in results:
             self.record_query(fetched_isa.query)
@@ -209,18 +209,25 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             prep = self._dss.client.prepare_request(r)
             t0 = datetime.now(UTC)
             req_descr = describe_request(prep, t0)
-            status, headers, resp_json = await self._async_session.get(
-                url=url, scope=self._read_scope()
-            )
-            duration = datetime.now(UTC) - t0
+            try:
+                status, headers, resp_json = await self._async_session.get(
+                    url=url, scope=self._read_scope()
+                )
+                duration = datetime.now(UTC) - t0
+                response = describe_aiohttp_response(
+                    status, headers, resp_json, duration
+                )
+            except aiohttp.ClientError as e:
+                duration = datetime.now(UTC) - t0
+                response = describe_failed_aiohttp_response(e, duration)
+
             rq = Query(
                 request=req_descr,
-                response=describe_aiohttp_response(
-                    status, headers, resp_json, duration
-                ),
+                response=response,
                 participant_id=self._dss.participant_id,
                 query_type=QueryType.dss_get_isa(self._dss.rid_version),
             )
+
             return isa_id, self._wrap_isa_get_query(rq)
 
     async def _create_isa(self, isa_id):
@@ -238,15 +245,21 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             prep = self._dss.client.prepare_request(r)
             t0 = datetime.now(UTC)
             req_descr = describe_request(prep, t0)
-            status, headers, resp_json = await self._async_session.put(
-                url=url, json=payload, scope=self._write_scope()
-            )
-            duration = datetime.now(UTC) - t0
+            try:
+                status, headers, resp_json = await self._async_session.put(
+                    url=url, json=payload, scope=self._write_scope()
+                )
+                duration = datetime.now(UTC) - t0
+                response = describe_aiohttp_response(
+                    status, headers, resp_json, duration
+                )
+            except aiohttp.ClientError as e:
+                duration = datetime.now(UTC) - t0
+                response = describe_failed_aiohttp_response(e, duration)
+
             rq = Query(
                 request=req_descr,
-                response=describe_aiohttp_response(
-                    status, headers, resp_json, duration
-                ),
+                response=response,
                 participant_id=self._dss.participant_id,
                 query_type=QueryType.dss_create_isa(self._dss.rid_version),
             )
@@ -262,18 +275,25 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             prep = self._dss.client.prepare_request(r)
             t0 = datetime.now(UTC)
             req_descr = describe_request(prep, t0)
-            status, headers, resp_json = await self._async_session.delete(
-                url=url, scope=self._write_scope()
-            )
-            duration = datetime.now(UTC) - t0
+            try:
+                status, headers, resp_json = await self._async_session.delete(
+                    url=url, scope=self._write_scope()
+                )
+                duration = datetime.now(UTC) - t0
+                response = describe_aiohttp_response(
+                    status, headers, resp_json, duration
+                )
+            except aiohttp.ClientError as e:
+                duration = datetime.now(UTC) - t0
+                response = describe_failed_aiohttp_response(e, duration)
+
             rq = Query(
                 request=req_descr,
-                response=describe_aiohttp_response(
-                    status, headers, resp_json, duration
-                ),
+                response=response,
                 participant_id=self._dss.participant_id,
                 query_type=QueryType.dss_delete_isa(self._dss.rid_version),
             )
+
             return isa_id, self._wrap_isa_put_query(rq, "delete")
 
     def _write_scope(self):
@@ -298,7 +318,7 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             asyncio.gather(*[self._create_isa(isa_id) for isa_id in self._isa_ids])
         )
 
-        results = typing.cast(Dict[str, ChangedISA], results)
+        results = typing.cast(dict[str, ChangedISA], results)
 
         for _, fetched_isa in results:
             self.record_query(fetched_isa.query)
@@ -312,7 +332,7 @@ class HeavyTrafficConcurrent(GenericTestScenario):
                 ) as sub_check:
                     if changed_isa.status_code == 201:
                         sub_check.record_failed(
-                            summary=f"PUT ISA returned technically-incorrect 201",
+                            summary="PUT ISA returned technically-incorrect 201",
                             details="DSS should return 200 from PUT ISA, but instead returned the reasonable-but-technically-incorrect code 201",
                             query_timestamps=[changed_isa.timestamp],
                         )
@@ -380,7 +400,7 @@ class HeavyTrafficConcurrent(GenericTestScenario):
             )
         )
 
-        results = typing.cast(Dict[str, ChangedISA], results)
+        results = typing.cast(dict[str, ChangedISA], results)
 
         for _, fetched_isa in results:
             self.record_query(fetched_isa.query)
@@ -409,13 +429,12 @@ class HeavyTrafficConcurrent(GenericTestScenario):
                 )
 
     def _get_deleted_isas(self):
-
         loop = asyncio.get_event_loop()
         results = loop.run_until_complete(
             asyncio.gather(*[self._get_isa(isa_id) for isa_id in self._isa_ids])
         )
 
-        results = typing.cast(Dict[str, ChangedISA], results)
+        results = typing.cast(dict[str, ChangedISA], results)
 
         for _, fetched_isa in results:
             self.record_query(fetched_isa.query)

@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import Optional
 
 from uas_standards.astm.f3548.v21.api import (
     EntityID,
@@ -13,17 +12,12 @@ from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.fetch import QueryError
 from monitoring.monitorlib.geotemporal import Volume4D
+from monitoring.monitorlib.subscription_params import SubscriptionParams
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstance,
     DSSInstanceResource,
-)
-from monitoring.uss_qualifier.resources.astm.f3548.v21.planning_area import (
-    PlanningAreaSpecification,
-)
-from monitoring.uss_qualifier.resources.astm.f3548.v21.subscription_params import (
-    SubscriptionParams,
 )
 from monitoring.uss_qualifier.resources.communications import ClientIdentityResource
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
@@ -52,16 +46,16 @@ class OIRExplicitSubHandling(TestScenario):
     _extra_sub_id: SubscriptionID
 
     # Keep track of the current OIR state
-    _current_oir: Optional[OperationalIntentReference]
+    _current_oir: OperationalIntentReference | None
     _expected_manager: str
-    _planning_area: PlanningAreaSpecification
+    _planning_area: PlanningAreaResource
     _planning_area_volume4d: Volume4D
 
     # Keep track of the current subscription
-    _sub_params: Optional[SubscriptionParams]
-    _current_sub: Optional[Subscription]
+    _sub_params: SubscriptionParams | None
+    _current_sub: Subscription | None
 
-    _current_extra_sub: Optional[Subscription]
+    _current_extra_sub: Subscription | None
 
     def __init__(
         self,
@@ -92,10 +86,10 @@ class OIRExplicitSubHandling(TestScenario):
 
         self._expected_manager = client_identity.subject()
 
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
 
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
+        self._planning_area_volume4d = self._planning_area.resolved_volume4d_with_times(
+            None, None
         )
 
     def run(self, context: ExecutionContext):
@@ -114,7 +108,12 @@ class OIRExplicitSubHandling(TestScenario):
             "Validate explicit subscription upon subscription replacement"
         )
         self._steps_update_oir_with_insufficient_explicit_sub(is_replacement=True)
+        self._step_oir_has_correct_subscription(
+            expected_sub_id=self._sub_id,
+            step_name="Unchanged OIR is attached to previous, valid, subscription",
+        )
         self._step_update_oir_with_sufficient_explicit_sub(is_replacement=True)
+        self._step_oir_has_correct_subscription(expected_sub_id=self._extra_sub_id)
         self._clean_test_case()
         self.end_test_case()
 
@@ -129,7 +128,7 @@ class OIRExplicitSubHandling(TestScenario):
             oir_params=self._planning_area.get_new_operational_intent_ref_params(
                 key=[],
                 state=OperationalIntentState.Accepted,
-                uss_base_url=self._planning_area.get_base_url(),
+                uss_base_url=self._planning_area.specification.get_base_url(),
                 time_start=datetime.now() - timedelta(seconds=10),
                 time_end=datetime.now() + timedelta(minutes=20),
                 subscription_id=None,
@@ -161,7 +160,7 @@ class OIRExplicitSubHandling(TestScenario):
         oir_update_params = self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=self._current_oir.time_start.value.datetime,
             time_end=self._current_oir.time_end.value.datetime,
             subscription_id=None,
@@ -214,7 +213,7 @@ class OIRExplicitSubHandling(TestScenario):
         oir_params = self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=datetime.now() - timedelta(seconds=10),
             time_end=self._sub_params.end_time
             + timedelta(seconds=1),  # OIR ends 1 sec after subscription
@@ -262,7 +261,7 @@ class OIRExplicitSubHandling(TestScenario):
             oir_params=self._planning_area.get_new_operational_intent_ref_params(
                 key=[],
                 state=OperationalIntentState.Accepted,
-                uss_base_url=self._planning_area.get_base_url(),
+                uss_base_url=self._planning_area.specification.get_base_url(),
                 time_start=datetime.now() - timedelta(seconds=10),
                 time_end=self._sub_params.end_time
                 - timedelta(seconds=60),  # OIR ends at the same time as subscription
@@ -297,7 +296,7 @@ class OIRExplicitSubHandling(TestScenario):
         oir_update_params = self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=self._current_oir.time_start.value.datetime,
             time_end=self._current_oir.time_end.value.datetime,
             subscription_id=self._extra_sub_id,
@@ -344,6 +343,7 @@ class OIRExplicitSubHandling(TestScenario):
                         details=f"Was expecting an HTTP 400 response because of an insufficient subscription, but got {qe.cause_status_code} instead. {qe.msg}",
                         query_timestamps=qe.query_timestamps,
                     )
+
         self.end_test_step()
 
     def _step_update_oir_with_sufficient_explicit_sub(self, is_replacement: bool):
@@ -361,7 +361,7 @@ class OIRExplicitSubHandling(TestScenario):
             oir_params=self._planning_area.get_new_operational_intent_ref_params(
                 key=[],
                 state=OperationalIntentState.Accepted,
-                uss_base_url=self._planning_area.get_base_url(),
+                uss_base_url=self._planning_area.specification.get_base_url(),
                 time_start=self._current_extra_sub.time_start.value.datetime,
                 time_end=self._current_extra_sub.time_end.value.datetime,
                 subscription_id=self._extra_sub_id,
@@ -370,7 +370,7 @@ class OIRExplicitSubHandling(TestScenario):
         self.end_test_step()
 
     def _step_oir_has_correct_subscription(
-        self, expected_sub_id: Optional[SubscriptionID]
+        self, expected_sub_id: SubscriptionID | None, step_name: str | None = None
     ):
         step_oir_has_correct_subscription(
             self,
@@ -444,7 +444,7 @@ class OIRExplicitSubHandling(TestScenario):
         return self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=datetime.now() - timedelta(seconds=10),
             time_end=datetime.now() + timedelta(minutes=20),
             subscription_id=subscription_id,

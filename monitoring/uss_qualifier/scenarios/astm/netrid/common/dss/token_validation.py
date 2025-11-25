@@ -1,7 +1,5 @@
 import datetime
-from typing import Dict, List, Optional
 
-import arrow
 import s2sphere
 from uas_standards.astm.f3411 import v19, v22a
 
@@ -44,10 +42,9 @@ class TokenValidation(GenericTestScenario):
         self._dss = dss.dss_instance
         self._dss_wrapper = DSSWrapper(self, dss.dss_instance)
         self._isa_id = id_generator.id_factory.make_id(ISASimple.ISA_TYPE)
-        self._isa_version: Optional[str] = None
-        self._isa = isa.specification
-
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
+        self._isa_version: str | None = None
+        self._isa = isa
+        self._isa_area = isa.s2_vertices()
 
         # correctly formed and signed using an unrecognized private key
         # (should cause requests to be rejected)
@@ -61,7 +58,7 @@ class TokenValidation(GenericTestScenario):
         )
 
     def run(self, context: ExecutionContext):
-        self._shift_isa_time_relative_to_now()
+        self._resolve_isa_time_bounds()
 
         self.begin_test_scenario(context)
 
@@ -87,10 +84,10 @@ class TokenValidation(GenericTestScenario):
 
         self.end_test_scenario()
 
-    def _shift_isa_time_relative_to_now(self):
-        now = arrow.utcnow().datetime
-        self._isa_start_time = self._isa.shifted_time_start(now)
-        self._isa_end_time = self._isa.shifted_time_end(now)
+    def _resolve_isa_time_bounds(self):
+        self._isa_start_time, self._isa_end_time = self._isa.resolved_time_bounds(
+            self.time_context.evaluate_now()
+        )
 
     def _wrong_auth_put(self):
         # Try to create an ISA with a read scope
@@ -162,7 +159,6 @@ class TokenValidation(GenericTestScenario):
             self._isa_version = new_isa.dss_query.isa.version
 
     def _wrong_auth_get(self):
-
         get_no_token = self._get_isa_tweak_auth(self._no_token_session)
         with self.check(
             "Missing token prevents reading an ISA",
@@ -408,7 +404,7 @@ class TokenValidation(GenericTestScenario):
                     )
             self._verify_notifications(deleted.notifications)
 
-    def _verify_notifications(self, notifications: Dict[str, ISAChangeNotification]):
+    def _verify_notifications(self, notifications: dict[str, ISAChangeNotification]):
         for subscriber_url, notification in notifications.items():
             pid = (
                 notification.query.participant_id
@@ -426,7 +422,7 @@ class TokenValidation(GenericTestScenario):
     def _put_isa_tweak_auth(
         self,
         utm_client: infrastructure.UTMClientSession,
-        isa_version: Optional[str] = None,
+        isa_version: str | None = None,
         scope_intent: str = "read",
     ) -> ISAChange:
         """A local version of mutate.rid.put_isa that lets us control authentication parameters"""
@@ -505,6 +501,8 @@ class TokenValidation(GenericTestScenario):
                     **({} if query_scope is None else {"scope": query_scope}),
                 ),
             )
+        else:
+            raise Exception(f"Unknown rid_version {self._dss.rid_version}")
 
         if dss_response.success:
             isa = dss_response.isa
@@ -620,11 +618,10 @@ class TokenValidation(GenericTestScenario):
     def _search_isas_tweak_auth(
         self,
         utm_client: infrastructure.UTMClientSession,
-        area: List[s2sphere.LatLng],
-        start_time: Optional[datetime.datetime],
-        end_time: Optional[datetime.datetime],
+        area: list[s2sphere.LatLng],
+        start_time: datetime.datetime | None,
+        end_time: datetime.datetime | None,
     ) -> FetchedISAs:
-
         url_time_params = ""
         if start_time is not None:
             url_time_params += (
@@ -680,8 +677,7 @@ class TokenValidation(GenericTestScenario):
 
     def _query_scope_for_auth_params(
         self, utm_client: infrastructure.UTMClientSession, scope_intent: str
-    ) -> Optional[str]:
-
+    ) -> str | None:
         if utm_client.auth_adapter is not None:
             if self._dss.rid_version == RIDVersion.f3411_19:
                 if scope_intent == "read":

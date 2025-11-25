@@ -26,8 +26,8 @@ resources:
   second_utm_auth: resources.communications.AuthAdapterResource?
   id_generator: resources.interuss.IDGeneratorResource
   service_area: resources.netrid.ServiceAreaResource
-  planning_area: resources.astm.f3548.v21.PlanningAreaResource
-  problematically_big_area: resources.VerticesResource
+  planning_area: resources.PlanningAreaResource
+  problematically_big_area: resources.VolumeResource
 
   test_exclusions: resources.dev.TestExclusionsResource?
   uss_identification: resources.interuss.uss_identification.USSIdentificationResource?
@@ -80,6 +80,7 @@ actions:
       id_generator: id_generator
       service_area: service_area
       problematically_big_area: problematically_big_area
+      planning_area: planning_area
       test_exclusions: test_exclusions?
       mock_uss_dp: mock_uss_dp?
       mock_uss_sp: mock_uss_sp?

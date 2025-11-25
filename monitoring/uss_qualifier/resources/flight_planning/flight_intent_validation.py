@@ -1,6 +1,6 @@
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Dict, Iterator, List, Optional
 
 import arrow
 from implicitdict import StringBasedTimeDelta
@@ -14,7 +14,7 @@ from monitoring.monitorlib.clients.flight_planning.flight_info_template import (
     FlightInfoTemplate,
 )
 from monitoring.monitorlib.geotemporal import Volume4D, Volume4DCollection
-from monitoring.monitorlib.temporal import Time, TimeDuringTest
+from monitoring.monitorlib.temporal import TestTimeContext, Time, TimeDuringTest
 from monitoring.monitorlib.uspace import problems_with_flight_authorisation
 from monitoring.uss_qualifier.resources.flight_planning.flight_intent import (
     FlightIntentID,
@@ -27,25 +27,25 @@ MAX_TEST_RUN_DURATION = timedelta(minutes=45)
 
 
 @dataclass
-class ExpectedFlightIntent(object):
+class ExpectedFlightIntent:
     intent_id: FlightIntentID
     name: FlightIntentName
-    must_conflict_with: Optional[List[FlightIntentName]] = None
-    must_not_conflict_with: Optional[List[FlightIntentName]] = None
-    usage_state: Optional[AirspaceUsageState] = None
-    uas_state: Optional[UasState] = None
-    f3548v21_priority_higher_than: Optional[List[FlightIntentName]] = None
-    f3548v21_priority_equal_to: Optional[List[FlightIntentName]] = None
-    earliest_time_start: Optional[StringBasedTimeDelta] = None
-    latest_time_start: Optional[StringBasedTimeDelta] = None
-    earliest_time_end: Optional[StringBasedTimeDelta] = None
-    latest_time_end: Optional[StringBasedTimeDelta] = None
-    valid_uspace_flight_auth: Optional[bool] = None
+    must_conflict_with: list[FlightIntentName] | None = None
+    must_not_conflict_with: list[FlightIntentName] | None = None
+    usage_state: AirspaceUsageState | None = None
+    uas_state: UasState | None = None
+    f3548v21_priority_higher_than: list[FlightIntentName] | None = None
+    f3548v21_priority_equal_to: list[FlightIntentName] | None = None
+    earliest_time_start: StringBasedTimeDelta | None = None
+    latest_time_start: StringBasedTimeDelta | None = None
+    earliest_time_end: StringBasedTimeDelta | None = None
+    latest_time_end: StringBasedTimeDelta | None = None
+    valid_uspace_flight_auth: bool | None = None
 
 
 def validate_flight_intent_templates(
-    templates: Dict[FlightIntentID, FlightInfoTemplate],
-    expected_intents: List[ExpectedFlightIntent],
+    templates: dict[FlightIntentID, FlightInfoTemplate],
+    expected_intents: list[ExpectedFlightIntent],
 ) -> Volume4D:
     """
     Returns: the bounding extents of the flight intent templates
@@ -53,23 +53,16 @@ def validate_flight_intent_templates(
     extents = Volume4DCollection([])
 
     now = Time(arrow.utcnow().datetime)
-    times = {
-        TimeDuringTest.StartOfTestRun: now,
-        TimeDuringTest.StartOfScenario: now,
-        TimeDuringTest.TimeOfEvaluation: now,
-    }
-    flight_intents = {k: v.resolve(times) for k, v in templates.items()}
+    context = TestTimeContext.all_times_are(now)
+    flight_intents = {k: v.resolve(context) for k, v in templates.items()}
     for flight_intent in flight_intents.values():
         extents.extend(flight_intent.basic_information.area)
     validate_flight_intents(flight_intents, expected_intents, now)
 
     later = Time(now.datetime + MAX_TEST_RUN_DURATION)
-    times = {
-        TimeDuringTest.StartOfTestRun: now,
-        TimeDuringTest.StartOfScenario: later,
-        TimeDuringTest.TimeOfEvaluation: later,
-    }
-    flight_intents = {k: v.resolve(times) for k, v in templates.items()}
+    context = TestTimeContext.all_times_are(later)
+    context[TimeDuringTest.StartOfTestRun] = now
+    flight_intents = {k: v.resolve(context) for k, v in templates.items()}
     for flight_intent in flight_intents.values():
         extents.extend(flight_intent.basic_information.area)
     validate_flight_intents(flight_intents, expected_intents, later)
@@ -78,8 +71,8 @@ def validate_flight_intent_templates(
 
 
 def validate_flight_intents(
-    intents: Dict[FlightIntentID, FlightInfo],
-    expected_intents: List[ExpectedFlightIntent],
+    intents: dict[FlightIntentID, FlightInfo],
+    expected_intents: list[ExpectedFlightIntent],
     now: Time,
 ) -> None:
     """Validate that `intents` contains all intents meeting all the criteria in `expected_intents`.

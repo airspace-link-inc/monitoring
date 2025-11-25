@@ -4,15 +4,11 @@ from uas_standards.astm.f3548.v21.api import EntityID
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.fetch import QueryError
-from monitoring.monitorlib.geotemporal import Volume4D
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstance,
     DSSInstanceResource,
-)
-from monitoring.uss_qualifier.resources.astm.f3548.v21.planning_area import (
-    PlanningAreaSpecification,
 )
 from monitoring.uss_qualifier.resources.communications import ClientIdentityResource
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
@@ -31,14 +27,15 @@ class CRSimple(TestScenario):
     """
 
     CR_TYPE = register_resource_type(397, "Constraint Reference")
+    CR_DURATION = timedelta(minutes=20)
 
     _dss: DSSInstance
 
     _cr_id: EntityID
+    _cr_start_time: datetime
 
     _expected_manager: str
-    _planning_area: PlanningAreaSpecification
-    _planning_area_volume4d: Volume4D
+    _planning_area: PlanningAreaResource
 
     def __init__(
         self,
@@ -62,17 +59,17 @@ class CRSimple(TestScenario):
         self._pid = [self._dss.participant_id]
 
         self._cr_id = id_generator.id_factory.make_id(self.CR_TYPE)
+        self._cr_start_time = datetime.now()
 
         self._expected_manager = client_identity.subject()
 
-        self._planning_area = planning_area.specification
-
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
-        )
+        self._planning_area = planning_area
 
     def run(self, context: ExecutionContext):
         self.begin_test_scenario(context)
+
+        self._cr_start_time = datetime.now() - timedelta(seconds=10)
+
         self._setup_case()
 
         self.begin_test_case("Deletion requires correct OVN")
@@ -89,8 +86,8 @@ class CRSimple(TestScenario):
 
     def _step_create_cr(self):
         cr_params = self._planning_area.get_new_constraint_ref_params(
-            time_start=datetime.now() - timedelta(seconds=10),
-            time_end=datetime.now() + timedelta(minutes=20),
+            time_start=self._cr_start_time,
+            time_end=self._cr_start_time + self.CR_DURATION,
         )
 
         self.begin_test_step("Create a constraint reference")
@@ -102,7 +99,7 @@ class CRSimple(TestScenario):
                 new_cr, subs, query = self._dss.put_constraint_ref(
                     cr_id=self._cr_id,
                     extents=cr_params.extents,
-                    uss_base_url=self._planning_area.get_base_url(),
+                    uss_base_url=self._planning_area.specification.get_base_url(),
                 )
                 self.record_query(query)
             except QueryError as qe:
@@ -145,7 +142,6 @@ class CRSimple(TestScenario):
         self.end_test_step()
 
     def _step_attempt_delete_incorrect_ovn(self):
-
         self.begin_test_step("Attempt deletion with incorrect OVN")
 
         with self.check(
@@ -190,7 +186,7 @@ class CRSimple(TestScenario):
                 _, _, q = self._dss.put_constraint_ref(
                     cr_id=self._cr_id,
                     extents=cr_params.extents,
-                    uss_base_url=self._planning_area.get_base_url(),
+                    uss_base_url=self._planning_area.specification.get_base_url(),
                     ovn="",
                 )
                 self.record_query(q)
@@ -229,7 +225,7 @@ class CRSimple(TestScenario):
                 _, _, q = self._dss.put_constraint_ref(
                     cr_id=self._cr_id,
                     extents=cr_params.extents,
-                    uss_base_url=self._planning_area.get_base_url(),
+                    uss_base_url=self._planning_area.specification.get_base_url(),
                     ovn="ThisIsAnIncorrectOVN",
                 )
                 self.record_query(q)
@@ -264,12 +260,14 @@ class CRSimple(TestScenario):
         self.end_test_case()
 
     def _ensure_clean_workspace_step(self):
-
         # Delete any active CR we might own
         test_step_fragments.cleanup_active_constraint_refs(
             self,
             self._dss,
-            self._planning_area_volume4d.to_f3548v21(),
+            self._planning_area.resolved_volume4d_with_times(
+                self._cr_start_time,
+                self._cr_start_time + self.CR_DURATION,
+            ).to_f3548v21(),
             self._expected_manager,
         )
 

@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import List, Optional
 
 from uas_standards.astm.f3548.v21.api import (
     EntityID,
@@ -10,9 +9,9 @@ from uas_standards.astm.f3548.v21.api import (
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.fetch import Query, QueryError
-from monitoring.monitorlib.geotemporal import Volume4D, Volume4DCollection
+from monitoring.monitorlib.geotemporal import Volume4DCollection
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstance,
     DSSInstanceResource,
@@ -50,7 +49,7 @@ class OIRSynchronization(TestScenario):
 
     _dss: DSSInstance
 
-    _dss_read_instances: List[DSSInstance]
+    _dss_read_instances: list[DSSInstance]
 
     # Base identifier for the OIR that will be created
     _oir_id: EntityID
@@ -59,7 +58,7 @@ class OIRSynchronization(TestScenario):
     _oir_params: PutOperationalIntentReferenceParameters
 
     # Keep track of the current OIR state
-    _current_oir: Optional[OperationalIntentReference]
+    _current_oir: OperationalIntentReference | None
 
     _expected_manager: str
 
@@ -97,12 +96,12 @@ class OIRSynchronization(TestScenario):
 
         self._oir_id = id_generator.id_factory.make_id(self.SUB_TYPE)
         self._expected_manager = client_identity.subject()
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
 
         # Build a ready-to-use 4D volume with no specified time for searching
         # the currently active OIRs
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
+        self._planning_area_volume4d = self._planning_area.resolved_volume4d_with_times(
+            None, None
         )
 
         self._current_oir = None
@@ -111,7 +110,7 @@ class OIRSynchronization(TestScenario):
         self._oir_params = self._planning_area.get_new_operational_intent_ref_params(
             key=[],
             state=OperationalIntentState.Accepted,
-            uss_base_url=self._planning_area.get_base_url(),
+            uss_base_url=self._planning_area.specification.get_base_url(),
             time_start=datetime.now() - timedelta(seconds=10),
             time_end=datetime.now() + timedelta(minutes=45),
             subscription_id=None,
@@ -179,12 +178,12 @@ class OIRSynchronization(TestScenario):
     def _setup_case(self):
         self.begin_test_case("Setup")
         self.begin_test_step("Ensure clean workspace")
-        self._ensure_clean_workspace_step()
+        self._ensure_clean_primary_workspace_step()
         self.end_test_step()
+        self._verify_clean_secondaries_step()
         self.end_test_case()
 
-    def _ensure_clean_workspace_step(self):
-
+    def _ensure_clean_primary_workspace_step(self):
         # Delete any active OIR we might own
         test_step_fragments.cleanup_active_oirs(
             self,
@@ -196,10 +195,16 @@ class OIRSynchronization(TestScenario):
         # Make sure the OIR ID we are going to use is available
         test_step_fragments.cleanup_op_intent(self, self._dss, self._oir_id)
 
+    def _verify_clean_secondaries_step(self):
+        self.begin_test_step("Verify secondary DSS instances are clean")
+        for dss in self._dss_read_instances:
+            test_step_fragments.verify_op_intent_does_not_exist(self, dss, self._oir_id)
+
+        self.end_test_step()
+
     def _create_oir_with_params(
         self, creation_params: PutOperationalIntentReferenceParameters
     ):
-
         with self.check(
             "Create operational intent reference query succeeds", [self._primary_pid]
         ) as check:
@@ -313,7 +318,7 @@ class OIRSynchronization(TestScenario):
                 "Propagated operational intent reference general area is synchronized",
                 involved_participants,
             ) as check:
-                oir: Optional[OperationalIntentReference] = None
+                oir: OperationalIntentReference | None = None
                 for _oir in oirs:
                     if _oir.id == self._oir_id:
                         oir = _oir
@@ -343,9 +348,8 @@ class OIRSynchronization(TestScenario):
         q: Query,
         expected_oir_params: PutOperationalIntentReferenceParameters,
         main_check_name: str,
-        involved_participants: List[str],
+        involved_participants: list[str],
     ):
-
         # TODO: this main check mechanism may be removed if we are able to specify requirements to be validated in test step fragments
 
         with self.check(main_check_name, involved_participants) as main_check:
@@ -582,5 +586,5 @@ class OIRSynchronization(TestScenario):
 
     def cleanup(self):
         self.begin_cleanup()
-        self._ensure_clean_workspace_step()
+        self._ensure_clean_primary_workspace_step()
         self.end_cleanup()

@@ -1,6 +1,6 @@
 import uuid
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Tuple
 
 import arrow
 import requests
@@ -8,7 +8,7 @@ from uas_standards.astm.f3548.v21 import api as f3548_v21
 from uas_standards.astm.f3548.v21.constants import OiMaxPlanHorizonDays, OiMaxVertices
 from uas_standards.interuss.automated_testing.scd.v1 import api as scd_api
 
-from monitoring.mock_uss import webapp
+from monitoring.mock_uss.app import webapp
 from monitoring.mock_uss.config import KEY_BASE_URL
 from monitoring.mock_uss.f3548v21 import utm_client
 from monitoring.mock_uss.flights.database import FlightRecord, db
@@ -90,14 +90,46 @@ def validate_request(op_intent: f3548_v21.OperationalIntent) -> None:
         )
 
 
-def check_for_disallowed_conflicts(
+def conflicts_with_flightrecords(
+    op_intent: f3548_v21.OperationalIntent, flights: list[FlightRecord | None]
+) -> bool:
+    """
+    Return true if the OperationalIntent conflicts with (intersects) any of the specified FlightRecords that do not
+    correspond with op_intent.
+    """
+
+    vc1 = Volume4DCollection.from_f3548v21(
+        (op_intent.details.volumes or [])
+        + (op_intent.details.off_nominal_volumes or [])
+    )
+
+    for other_flight in flights:
+        if not other_flight:
+            continue
+
+        if other_flight.op_intent.reference.id == op_intent.reference.id:  # Same flight
+            continue
+
+        vc2 = Volume4DCollection.from_f3548v21(
+            (other_flight.op_intent.details.volumes or [])
+            + (other_flight.op_intent.details.off_nominal_volumes or [])
+        )
+
+        if vc1.intersects_vol4s(vc2):
+            return True
+
+    return False
+
+
+def check_for_conflicts(
     new_op_intent: f3548_v21.OperationalIntent,
-    existing_flight: Optional[FlightRecord],
-    op_intents: List[f3548_v21.OperationalIntent],
+    existing_flight: FlightRecord | None,
+    op_intents: list[f3548_v21.OperationalIntent],
     locality: Locality,
-    log: Optional[Callable[[str], None]] = None,
-) -> None:
+    log: Callable[[str], None] | None = None,
+) -> bool:
     """Raise a PlannerError if there are any disallowed conflicts.
+       Return a boolean, set to True if there are allowed conflicts.
 
     Args:
         new_op_intent: The prospective operational intent.
@@ -108,16 +140,20 @@ def check_for_disallowed_conflicts(
         log: If specified, call this function to report information about conflict evaluation.
     """
     if log is None:
-        log = lambda msg: None
+
+        def log(msg):
+            return None
 
     if new_op_intent.reference.state not in (
         scd_api.OperationalIntentState.Accepted,
         scd_api.OperationalIntentState.Activated,
     ):
         # No conflicts are disallowed if the flight is not nominal
-        return
+        return False
 
     v1 = Volume4DCollection.from_interuss_scd_api(new_op_intent.details.volumes)
+
+    allowed_conflict = False
 
     for op_intent in op_intents:
         if (
@@ -128,25 +164,28 @@ def check_for_disallowed_conflicts(
                 f"intersection with {op_intent.reference.id} not considered: intersection with a past version of this flight"
             )
             continue
-        new_priority = priority_of(new_op_intent.details)
-        old_priority = priority_of(op_intent.details)
-        if new_priority > old_priority:
-            log(
-                f"intersection with {op_intent.reference.id} not considered: intersection with lower-priority operational intents"
-            )
-            continue
-        if (
-            new_priority == old_priority
-            and locality.allows_same_priority_intersections(old_priority)
-        ):
-            log(
-                f"intersection with {op_intent.reference.id} not considered: intersection with same-priority operational intents (if allowed)"
-            )
-            continue
 
         v2 = Volume4DCollection.from_interuss_scd_api(
             op_intent.details.volumes + op_intent.details.off_nominal_volumes
         )
+
+        new_priority = priority_of(new_op_intent.details)
+        old_priority = priority_of(op_intent.details)
+        if new_priority > old_priority:
+            log(
+                f"intersection with {op_intent.reference.id} allowed: intersection with lower-priority operational intents"
+            )
+
+            allowed_conflict |= v1.intersects_vol4s(v2)
+            continue
+        if new_priority == old_priority and locality.allows_same_priority_intersections(
+            old_priority
+        ):
+            log(
+                f"intersection with {op_intent.reference.id} allowed: intersection with same-priority operational intents (if allowed)"
+            )
+            allowed_conflict |= v1.intersects_vol4s(v2)
+            continue
 
         modifying_activated = (
             existing_flight
@@ -160,7 +199,7 @@ def check_for_disallowed_conflicts(
             ).intersects_vol4s(v2)
             if preexisting_conflict:
                 log(
-                    f"intersection with {op_intent.reference.id} not considered: modification of Activated operational intent with a pre-existing conflict"
+                    f"intersection with {op_intent.reference.id} allowed: modification of Activated operational intent with a pre-existing conflict"
                 )
                 continue
 
@@ -169,10 +208,12 @@ def check_for_disallowed_conflicts(
                 f"Requested flight (priority {new_priority}) intersected {op_intent.reference.manager}'s operational intent {op_intent.reference.id} (priority {old_priority})"
             )
 
+    return allowed_conflict
+
 
 def op_intent_transition_valid(
-    transition_from: Optional[scd_api.OperationalIntentState],
-    transition_to: Optional[scd_api.OperationalIntentState],
+    transition_from: scd_api.OperationalIntentState | None,
+    transition_to: scd_api.OperationalIntentState | None,
 ) -> bool:
     valid_states = {
         scd_api.OperationalIntentState.Accepted,
@@ -322,7 +363,7 @@ def op_intent_from_flightinfo(
         ovn="UNKNOWN",
         time_start=v4c.time_start.to_f3548v21(),
         time_end=v4c.time_end.to_f3548v21(),
-        uss_base_url="{}/mock/scd".format(webapp.config[KEY_BASE_URL]),
+        uss_base_url=f"{webapp.config[KEY_BASE_URL]}/mock/scd",
         subscription_id="UNKNOWN",
     )
     if "astm_f3548_21" in flight_info and flight_info.astm_f3548_21:
@@ -372,7 +413,7 @@ def op_intent_from_flightrecord(
 def query_operational_intents(
     locality: Locality,
     area_of_interest: f3548_v21.Volume4D,
-) -> List[f3548_v21.OperationalIntent]:
+) -> list[f3548_v21.OperationalIntent]:
     """Retrieve a complete set of operational intents in an area, including details.
 
     :param locality: Locality applicable to this query
@@ -423,9 +464,9 @@ def query_operational_intents(
                 raise e
     result.extend(updated_op_intents)
 
-    with db as tx:
+    with db.transact() as tx:
         for op_intent in updated_op_intents:
-            tx.cached_operations[op_intent.reference.id] = op_intent
+            tx.value.cached_operations[op_intent.reference.id] = op_intent
 
     return result
 
@@ -440,7 +481,7 @@ def get_down_uss_op_intent(
 
     Note: This function will populate volumes (for accepted or activated states) and off_nominal_volumes (for contingent
      and non-conforming states) with the area of interest that was requested. The reason is that later on the function
-     `check_for_disallowed_conflicts` will need to evaluate again those conflicts to determine pre-existing conflicts.
+     `check_for_conflicts` will need to evaluate again those conflicts to determine pre-existing conflicts.
     TODO: A better approach to this issue would be to store the area in conflict when a flight is planned with a
      conflict, that way we can just retrieve the conflicting area instead of having to compute again the intersection
      between the flight to be planned and the conflicting operational intent.
@@ -489,10 +530,10 @@ def get_down_uss_op_intent(
 
 def check_op_intent(
     new_flight: FlightRecord,
-    existing_flight: Optional[FlightRecord],
+    existing_flight: FlightRecord | None,
     locality: Locality,
     log: Callable[[str], None],
-) -> List[f3548_v21.EntityOVN]:
+) -> tuple[list[f3548_v21.EntityOVN], bool]:
     # Check the transition is valid
     state_transition_from = (
         f3548_v21.OperationalIntentState(existing_flight.op_intent.reference.state)
@@ -536,7 +577,7 @@ def check_op_intent(
         log(
             f"Checking for intersections with {', '.join(op_intent.reference.id for op_intent in op_intents)}"
         )
-        check_for_disallowed_conflicts(
+        has_conflicts = check_for_conflicts(
             new_flight.op_intent, existing_flight, op_intents, locality, log
         )
 
@@ -548,16 +589,17 @@ def check_op_intent(
     else:
         # Flight is not nominal and therefore doesn't need to check intersections
         key = []
+        has_conflicts = False
 
-    return key
+    return key, has_conflicts
 
 
 def share_op_intent(
     new_flight: FlightRecord,
-    existing_flight: Optional[FlightRecord],
-    key: List[f3548_v21.EntityOVN],
+    existing_flight: FlightRecord | None,
+    key: list[f3548_v21.EntityOVN],
     log: Callable[[str], None],
-) -> Tuple[FlightRecord, Dict[f3548_v21.SubscriptionUssBaseURL, Exception]]:
+) -> tuple[FlightRecord, dict[f3548_v21.SubscriptionUssBaseURL, Exception]]:
     """Share the operational intent reference with the DSS in compliance with ASTM F3548-21.
 
     Returns:
@@ -618,7 +660,7 @@ def share_op_intent(
 
 def delete_op_intent(
     op_intent_ref: f3548_v21.OperationalIntentReference, log: Callable[[str], None]
-) -> Dict[f3548_v21.SubscriptionUssBaseURL, Exception]:
+) -> dict[f3548_v21.SubscriptionUssBaseURL, Exception]:
     """Remove the operational intent reference from the DSS in compliance with ASTM F3548-21.
 
     Args:
@@ -645,22 +687,18 @@ def delete_op_intent(
 
 def notify_subscribers(
     op_intent_id: f3548_v21.EntityID,
-    op_intent: Optional[f3548_v21.OperationalIntent],
-    subscribers: List[f3548_v21.SubscriberToNotify],
+    op_intent: f3548_v21.OperationalIntent | None,
+    subscribers: list[f3548_v21.SubscriberToNotify],
     log: Callable[[str], None],
-) -> Dict[f3548_v21.SubscriptionUssBaseURL, Exception]:
+) -> dict[f3548_v21.SubscriptionUssBaseURL, Exception]:
     """
     Notify subscribers of a changed or deleted operational intent.
     This function will attempt all notifications, even if some of them fail.
 
     :return: Notification errors if any, by subscriber.
     """
-    notif_errors: Dict[f3548_v21.SubscriptionUssBaseURL, Exception] = {}
-    base_url = "{}/mock/scd".format(webapp.config[KEY_BASE_URL])
+    notif_errors: dict[f3548_v21.SubscriptionUssBaseURL, Exception] = {}
     for subscriber in subscribers:
-        if subscriber.uss_base_url == base_url:
-            # Do not notify ourselves
-            continue
         update = f3548_v21.PutOperationalIntentDetailsParameters(
             operational_intent_id=op_intent_id,
             operational_intent=op_intent,

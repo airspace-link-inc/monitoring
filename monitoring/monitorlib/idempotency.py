@@ -1,8 +1,8 @@
 import base64
 import hashlib
 import json
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Dict, Optional
 
 import arrow
 import flask
@@ -21,17 +21,17 @@ class Response(ImplicitDict):
     Note that this object is never actually used (in order to maximize performance); instead it serves as documentation
     of the structure of the fields within a plain JSON dict/object."""
 
-    json: Optional[dict]
-    body: Optional[str]
+    json: dict | None
+    body: str | None
     code: int
     timestamp: StringBasedDateTime
 
 
-def _get_responses(raw: bytes) -> Dict[str, Response]:
+def _get_responses(raw: bytes) -> dict[str, Response]:
     return json.loads(raw.decode("utf-8"))
 
 
-def _set_responses(responses: Dict[str, Response]) -> bytes:
+def _set_responses(responses: dict[str, Response]) -> bytes:
     while True:
         s = json.dumps(responses)
         if len(s) <= _max_request_buffer_size:
@@ -46,11 +46,12 @@ def _set_responses(responses: Dict[str, Response]) -> bytes:
                 oldest_id = request_id
                 oldest_timestamp = t
 
-        del responses[oldest_id]
+        if oldest_id:
+            del responses[oldest_id]
     return s.encode("utf-8")
 
 
-_fulfilled_requests = SynchronizedValue(
+_fulfilled_requests = SynchronizedValue[dict[str, Response]](
     {},
     decoder=_get_responses,
     encoder=_set_responses,
@@ -58,7 +59,7 @@ _fulfilled_requests = SynchronizedValue(
 )
 
 
-def get_hashed_request_id() -> Optional[str]:
+def get_hashed_request_id() -> str:
     """Retrieves an identifier for the request by hashing key characteristics of the request."""
     characteristics = flask.request.method + flask.request.url
     if flask.request.json:
@@ -70,7 +71,7 @@ def get_hashed_request_id() -> Optional[str]:
     ).decode("utf-8")
 
 
-def idempotent_request(get_request_id: Optional[Callable[[], Optional[str]]] = None):
+def idempotent_request(get_request_id: Callable[[], str] | None = None):
     """Decorator for idempotent Flask view handlers.
 
     When subsequent requests are received with the same request identifier, this decorator will use a recent cached
@@ -103,20 +104,20 @@ def idempotent_request(get_request_id: Optional[Callable[[], Optional[str]]] = N
                     request_id,
                 )
                 response = cached_requests[request_id]
-                if response["body"] is not None:
-                    return response["body"], response["code"]
+                if response.body is not None:
+                    return response.body, response.code
                 else:
-                    return flask.jsonify(response["json"]), response["code"]
+                    return flask.jsonify(response.json), response.code
 
             result = fn(*args, **kwargs)
             to_return = result
 
-            response = {
-                "timestamp": arrow.utcnow().isoformat(),
-                "code": 200,
-                "body": None,
-                "json": None,
-            }
+            response = Response(
+                timestamp=arrow.utcnow().isoformat(),
+                code=200,
+                body=None,
+                json=None,
+            )
             keep_code = False
             if isinstance(result, tuple):
                 if len(result) == 2:
@@ -124,7 +125,7 @@ def idempotent_request(get_request_id: Optional[Callable[[], Optional[str]]] = N
                         raise NotImplementedError(
                             f"Unable to cache Flask view handler result where the second 2-tuple element is a '{type(result[1]).__name__}'"
                         )
-                    response["code"] = result[1]
+                    response.code = result[1]
                     keep_code = True
                     result = result[0]
                 else:
@@ -133,22 +134,22 @@ def idempotent_request(get_request_id: Optional[Callable[[], Optional[str]]] = N
                     )
 
             if isinstance(result, str):
-                response["body"] = result
-                response["json"] = None
+                response.body = result
+                response.json = None
             elif isinstance(result, flask.Response):
                 try:
-                    response["json"] = result.get_json()
+                    response.json = result.get_json()
                 except ValueError:
-                    response["body"] = result.get_data(as_text=True)
+                    response.body = result.get_data(as_text=True)
                 if not keep_code:
-                    response["code"] = result.status_code
+                    response.code = result.status_code
             else:
                 raise NotImplementedError(
                     f"Unable to cache Flask view handler result of type '{type(result).__name__}'"
                 )
 
-            with _fulfilled_requests as cached_requests:
-                cached_requests[request_id] = response
+            with _fulfilled_requests.transact() as cached_requests_tx:
+                cached_requests_tx.value[request_id] = response
 
             return to_return
 

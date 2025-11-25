@@ -1,7 +1,6 @@
 import datetime
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple, Union
 
 import arrow
 import s2sphere
@@ -57,7 +56,7 @@ _POSITION_TIMESTAMP_MAX_AGE_SEC = (
 
 
 @dataclass
-class DPObservedFlight(object):
+class DPObservedFlight:
     query: FetchedUSSFlights
     flight_index: int
 
@@ -66,7 +65,7 @@ class DPObservedFlight(object):
         return self.query.flights[self.flight_index].id
 
     @property
-    def most_recent_position(self) -> Optional[Position]:
+    def most_recent_position(self) -> Position | None:
         return self.query.flights[self.flight_index].most_recent_position
 
     @property
@@ -76,7 +75,7 @@ class DPObservedFlight(object):
     # TODO we may rather want to expose the whole flight object (self.query.flights[self.flight])
     #  and let callers access subfields directly (will be handled in separate PR)
     @property
-    def timestamp_accuracy(self) -> Optional[float]:
+    def timestamp_accuracy(self) -> float | None:
         return self.query.flights[self.flight_index].timestamp_accuracy
 
     @property
@@ -88,18 +87,18 @@ class DPObservedFlight(object):
         return self.query.flights_url
 
 
-ObservationType = Union[Flight, DPObservedFlight]
+ObservationType = Flight | DPObservedFlight
 
 
 @dataclass
-class TelemetryMapping(object):
+class TelemetryMapping:
     injected_flight: InjectedFlight
     telemetry_index: int
     observed_flight: ObservationType
 
 
 @dataclass
-class FetchedToInjectedCache(object):
+class FetchedToInjectedCache:
     mappings: dict[str, ParticipantID] = field(default_factory=dict)
     """Mapping is a map of URL -> ParticipantID that we found until now"""
 
@@ -108,9 +107,9 @@ class FetchedToInjectedCache(object):
 
 
 def map_observations_to_injected_flights(
-    injected_flights: List[InjectedFlight],
-    observed_flights: List[ObservationType],
-) -> Dict[str, TelemetryMapping]:
+    injected_flights: list[InjectedFlight],
+    observed_flights: list[ObservationType],
+) -> dict[str, TelemetryMapping]:
     """Identify which of the observed flights (if any) matches to each of the injected flights
 
     This function assumes there is no valid situation in which a particular observed flight could be one of multiple
@@ -123,7 +122,7 @@ def map_observations_to_injected_flights(
 
     Returns: Mapping between InjectedFlight and observed Flight, indexed by injection_id.
     """
-    mapping: Dict[str, TelemetryMapping] = {}
+    mapping: dict[str, TelemetryMapping] = {}
     for injected_flight in injected_flights:
         smallest_distance = 1e9
         best_match = None
@@ -175,10 +174,10 @@ def map_observations_to_injected_flights(
 
 
 def map_fetched_to_injected_flights(
-    injected_flights: List[InjectedFlight],
-    fetched_flights: List[FetchedUSSFlights],
+    injected_flights: list[InjectedFlight],
+    fetched_flights: list[FetchedUSSFlights],
     query_cache: FetchedToInjectedCache,
-) -> Dict[str, TelemetryMapping]:
+) -> dict[str, TelemetryMapping]:
     """Identify which of the fetched flights (if any) matches to each of the injected flights.
 
     See `map_observations_to_injected_flights`.
@@ -225,7 +224,7 @@ def map_fetched_to_injected_flights(
     return tel_mapping
 
 
-class RIDObservationEvaluator(object):
+class RIDObservationEvaluator:
     """Evaluates observations of an RID system over time.
 
     This evaluator observes a set of provided RIDSystemObservers in
@@ -238,10 +237,10 @@ class RIDObservationEvaluator(object):
     def __init__(
         self,
         test_scenario: TestScenario,
-        injected_flights: List[InjectedFlight],
+        injected_flights: list[InjectedFlight],
         config: EvaluationConfiguration,
         rid_version: RIDVersion,
-        dss: Optional[DSSInstance] = None,
+        dss: DSSInstance | None = None,
     ):
         self._test_scenario = test_scenario
         self._common_dictionary_evaluator = RIDCommonDictionaryEvaluator(
@@ -263,13 +262,12 @@ class RIDObservationEvaluator(object):
             raise ValueError(
                 f"Cannot evaluate a system using RID version {rid_version} with a DSS using RID version {dss.rid_version}"
             )
-        self._retrieved_flight_details: Set[str] = (
-            set()
-        )  # Contains the observed IDs of the flights whose details were retrieved.
+        # dict of observer (identified by its base_url) to set of flight ID for which details were retrieved.
+        self._retrieved_flight_details: dict[str, set[str]] = {}
 
     def evaluate_system_instantaneously(
         self,
-        observers: List[RIDSystemObserver],
+        observers: list[RIDSystemObserver],
         rect: s2sphere.LatLngRect,
     ) -> None:
         if self._dss:
@@ -330,9 +328,9 @@ class RIDObservationEvaluator(object):
         self,
         observer: RIDSystemObserver,
         rect: s2sphere.LatLngRect,
-        observation: Optional[GetDisplayDataResponse],
+        observation: GetDisplayDataResponse | None,
         query: fetch.Query,
-        verified_sps: Set[str],
+        verified_sps: set[str],
     ) -> None:
         diagonal_km = (
             rect.lo().get_distance(rect.hi()).degrees * geo.EARTH_CIRCUMFERENCE_KM / 360
@@ -359,7 +357,6 @@ class RIDObservationEvaluator(object):
         else:
             self._evaluate_normal_observation(
                 observer,
-                rect,
                 observation,
                 query,
                 verified_sps,
@@ -368,10 +365,9 @@ class RIDObservationEvaluator(object):
     def _evaluate_normal_observation(
         self,
         observer: RIDSystemObserver,
-        rect: s2sphere.LatLngRect,
         observation: GetDisplayDataResponse,
         query: fetch.Query,
-        verified_sps: Set[str],
+        verified_sps: set[str],
     ) -> None:
         # Make sure we didn't get duplicate flight IDs
         flights_by_id = {}
@@ -457,15 +453,18 @@ class RIDObservationEvaluator(object):
                         ),
                     )
 
-        # Check details of flights (once per flight)
+        # Check details of flights (once per flight and per observer)
         for mapping in mapping_by_injection_id.values():
-
             with self._test_scenario.check(
                 "Successful details observation",
                 [mapping.injected_flight.uss_participant_id],
             ) as check:
-                # query for flight details only once per flight
-                if mapping.observed_flight.id in self._retrieved_flight_details:
+                # query for flight details only once per flight and per observer
+                if (
+                    observer.base_url in self._retrieved_flight_details
+                    and mapping.observed_flight.id
+                    in self._retrieved_flight_details[observer.base_url]
+                ):
                     continue
 
                 details_obs, query = observer.observe_flight_details(
@@ -488,7 +487,13 @@ class RIDObservationEvaluator(object):
                     details_inj = mapping.injected_flight.flight.get_details(
                         telemetry_inj.timestamp.datetime
                     )
-                    self._retrieved_flight_details.add(mapping.observed_flight.id)
+
+                    if observer.base_url not in self._retrieved_flight_details:
+                        self._retrieved_flight_details[observer.base_url] = set()
+                    self._retrieved_flight_details[observer.base_url].add(
+                        mapping.observed_flight.id
+                    )
+
                     self._common_dictionary_evaluator.evaluate_dp_details(
                         details_inj,
                         details_obs,
@@ -517,7 +522,7 @@ class RIDObservationEvaluator(object):
         self,
         rect: s2sphere.LatLngRect,
         query: fetch.Query,
-    ) -> Tuple[List[InjectedFlight], List[InjectedFlight]]:
+    ) -> tuple[list[InjectedFlight], list[InjectedFlight]]:
         present = []
         uncertain = []
 
@@ -628,7 +633,7 @@ class RIDObservationEvaluator(object):
 
                 # evaluate clusters that are actually obfuscated flights
                 obfuscated_clusters = [
-                    c for c in observation.clusters if c.number_of_flights == 1
+                    c for c in observation.clusters if c.number_of_flights > 0
                 ]
                 self._evaluate_obfuscated_clusters_observation(
                     observer, obfuscated_clusters, expected, uncertain
@@ -641,7 +646,7 @@ class RIDObservationEvaluator(object):
     def _evaluate_clusters_obfuscation_distance(
         self,
         observer: RIDSystemObserver,
-        clusters: List[Cluster],
+        clusters: list[Cluster],
     ) -> None:
         # TODO: Improve this check by using the positions of the flights to compute the minimum obfuscation distance.
         #  For this we need the assignment of flights per cluster. Currently this checks only if the cluster has
@@ -650,7 +655,7 @@ class RIDObservationEvaluator(object):
         #  Alternatively, or as a first step, some better checks could be performed by checking for situations that are
         #  wrong for sure. (see https://github.com/interuss/monitoring/pull/121#discussion_r1265972147)
 
-        cluster_rects: List[LatLngRect] = [
+        cluster_rects: list[LatLngRect] = [
             LatLngRect.from_point_pair(
                 LatLng.from_degrees(c.corners[0].lat, c.corners[0].lng),
                 LatLng.from_degrees(c.corners[1].lat, c.corners[1].lng),
@@ -681,11 +686,11 @@ class RIDObservationEvaluator(object):
     def _evaluate_obfuscated_clusters_observation(
         self,
         observer: RIDSystemObserver,
-        obfuscated_clusters: List[Cluster],
-        expected_flights: List[InjectedFlight],
-        uncertain_flights: List[InjectedFlight],
+        obfuscated_clusters: list[Cluster],
+        expected_flights: list[InjectedFlight],
+        uncertain_flights: list[InjectedFlight],
     ) -> None:
-        cluster_rects: List[LatLngRect] = [
+        cluster_rects: list[LatLngRect] = [
             LatLngRect.from_point_pair(
                 LatLng.from_degrees(c.corners[0].lat, c.corners[0].lng),
                 LatLng.from_degrees(c.corners[1].lat, c.corners[1].lng),
@@ -697,7 +702,6 @@ class RIDObservationEvaluator(object):
             "Individual flights obfuscation",
             [observer.participant_id],
         ) as check:
-
             # check that no expected or uncertain flight is at the center of the cluster
             for center in [rect.get_center() for rect in cluster_rects]:
                 for injected_flight in expected_flights + uncertain_flights:
@@ -721,7 +725,6 @@ class RIDObservationEvaluator(object):
             for injected_flight in expected_flights:
                 flight_in_cluster = False
                 for tel in injected_flight.flight.telemetry:
-
                     # go to next flight if the flight has already been validated by a previous telemetry point
                     if flight_in_cluster:
                         break
@@ -743,7 +746,7 @@ class RIDObservationEvaluator(object):
         self,
         requested_area: s2sphere.LatLngRect,
         sp_observation: FetchedFlights,
-        mappings: Dict[str, TelemetryMapping],
+        mappings: dict[str, TelemetryMapping],
     ) -> None:
         # Note: This step currently uses the DSS endpoint to perform a one-time query for ISAs, but this
         # endpoint is not strictly required.  The PUT Subscription endpoint, followed immediately by the
@@ -782,9 +785,8 @@ class RIDObservationEvaluator(object):
         self,
         requested_area: s2sphere.LatLngRect,
         sp_observation: FetchedFlights,
-        mappings: Dict[str, TelemetryMapping],
+        mappings: dict[str, TelemetryMapping],
     ) -> None:
-
         _evaluate_flight_presence(
             "uss_qualifier, acting as Display Provider",
             sp_observation.queries,
@@ -914,7 +916,7 @@ class RIDObservationEvaluator(object):
 
     def _evaluate_area_too_large_sp_observation(
         self,
-        mappings: Dict[str, TelemetryMapping],
+        mappings: dict[str, TelemetryMapping],
         rect: s2sphere.LatLngRect,
         diagonal: float,
     ) -> None:
@@ -998,7 +1000,7 @@ class RIDObservationEvaluator(object):
                 fail_check()
 
 
-class DisconnectedUASObservationEvaluator(object):
+class DisconnectedUASObservationEvaluator:
     """Evaluates observations of an RID system over time.
 
     This evaluator observes a set of provided RIDSystemObservers in
@@ -1011,7 +1013,7 @@ class DisconnectedUASObservationEvaluator(object):
     def __init__(
         self,
         test_scenario: TestScenario,
-        injected_flights: List[InjectedFlight],
+        injected_flights: list[InjectedFlight],
         config: EvaluationConfiguration,
         rid_version: RIDVersion,
         dss: DSSInstance,
@@ -1029,15 +1031,12 @@ class DisconnectedUASObservationEvaluator(object):
             raise ValueError(
                 f"Cannot evaluate a system using RID version {rid_version} with a DSS using RID version {dss.rid_version}"
             )
-        self._retrieved_flight_details: Set[str] = (
-            set()
-        )  # Contains the observed IDs of the flights whose details were retrieved.
 
         # Keep track of the flights that we have observed as having been 'disconnected'
         # (last observed telemetry corresponds to last injected one within the window where data is returned)
-        self._observed_disconnections: Set[str] = set()
+        self._observed_disconnections: set[str] = set()
 
-    def remaining_disconnections_to_observe(self) -> Dict[str, str]:
+    def remaining_disconnections_to_observe(self) -> dict[str, str]:
         return {
             f.flight.injection_id: f.uss_participant_id
             for f in self._injected_flights
@@ -1089,7 +1088,7 @@ class DisconnectedUASObservationEvaluator(object):
     def _evaluate_sp_observation(
         self,
         sp_observation: FetchedFlights,
-        mappings: Dict[str, TelemetryMapping],
+        mappings: dict[str, TelemetryMapping],
     ) -> None:
         # Note: This step currently uses the DSS endpoint to perform a one-time query for ISAs, but this
         # endpoint is not strictly required.  The PUT Subscription endpoint, followed immediately by the
@@ -1115,9 +1114,8 @@ class DisconnectedUASObservationEvaluator(object):
     def _evaluate_sp_observation_of_disconnected_flights(
         self,
         sp_observation: FetchedFlights,
-        mappings: Dict[str, TelemetryMapping],
+        mappings: dict[str, TelemetryMapping],
     ) -> None:
-
         # TODO we will want to reuse the code in RIDObservationEvaluator rather than copy-pasting it
         _evaluate_flight_presence(
             "uss_qualifier, acting as Display Provider",
@@ -1154,7 +1152,7 @@ class DisconnectedUASObservationEvaluator(object):
                     "Disconnected flight is shown as such",
                     [expected_flight.uss_participant_id],
                 ) as check:
-                    if not expected_flight.flight.injection_id in mappings:
+                    if expected_flight.flight.injection_id not in mappings:
                         check.record_failed(
                             summary="Expected flight not observed",
                             details="A flight for which telemetry was injected was not observed by the Service Provider",
@@ -1191,7 +1189,7 @@ class DisconnectedUASObservationEvaluator(object):
                             )
 
 
-class NotificationsEvaluator(object):
+class NotificationsEvaluator:
     """Evaluates observations of an RID system over time.
 
     This evaluator observes a set of provided RIDSystemObservers in
@@ -1205,7 +1203,7 @@ class NotificationsEvaluator(object):
         service_providers: NetRIDServiceProviders,
         config: EvaluationConfiguration,
         rid_version: RIDVersion,
-        initial_notifications: dict[str, List[str]],
+        initial_notifications: dict[str, list[str]],
         notification_before: datetime.datetime,
         notification_after: datetime.datetime,
     ):
@@ -1254,7 +1252,6 @@ class NotificationsEvaluator(object):
         return not self.remaining_notifications_to_observe()
 
     def _retrieve_notifications(self):
-
         self._current_notifications = injection.get_user_notifications(
             self._test_scenario,
             self._service_providers,
@@ -1263,7 +1260,7 @@ class NotificationsEvaluator(object):
         )
 
 
-def _chronological_positions(f: Flight) -> List[s2sphere.LatLng]:
+def _chronological_positions(f: Flight) -> list[s2sphere.LatLng]:
     """
     Returns the recent positions of the flight, ordered by time with the oldest first, and the most recent last.
     """
@@ -1273,7 +1270,7 @@ def _chronological_positions(f: Flight) -> List[s2sphere.LatLng]:
     ]
 
 
-def _sliding_triples(points: List[s2sphere.LatLng]) -> List[List[s2sphere.LatLng]]:
+def _sliding_triples(points: list[s2sphere.LatLng]) -> list[list[s2sphere.LatLng]]:
     """
     Returns a list of triples of consecutive positions in passed the list.
     """
@@ -1282,12 +1279,12 @@ def _sliding_triples(points: List[s2sphere.LatLng]) -> List[List[s2sphere.LatLng
 
 def _evaluate_flight_presence(
     observer_participant_id: str,
-    observation_queries: List[Query],
+    observation_queries: list[Query],
     observer_participant_is_relevant: bool,
-    mapping_by_injection_id: Dict[str, TelemetryMapping],
-    verified_sps: Set[str],
+    mapping_by_injection_id: dict[str, TelemetryMapping],
+    verified_sps: set[str],
     test_scenario: TestScenario,
-    injected_flights: List[InjectedFlight],
+    injected_flights: list[InjectedFlight],
     rid_version: RIDVersion,
     evaluation_config: EvaluationConfiguration,
 ):

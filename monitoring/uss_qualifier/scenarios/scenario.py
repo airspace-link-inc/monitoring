@@ -1,9 +1,10 @@
 import inspect
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Set, Type, TypeVar, Union
+from typing import TypeVar
 
 import arrow
 from implicitdict import StringBasedDateTime
@@ -14,6 +15,7 @@ from monitoring.monitorlib import fetch, inspection
 from monitoring.monitorlib.errors import current_stack_string
 from monitoring.monitorlib.fetch import QueryType
 from monitoring.monitorlib.inspection import fullname
+from monitoring.monitorlib.temporal import TestTimeContext
 from monitoring.uss_qualifier import scenarios as scenarios_module
 from monitoring.uss_qualifier.common_data_definitions import Severity
 from monitoring.uss_qualifier.reports.report import (
@@ -56,15 +58,21 @@ SQUELCH_WARN_ON_QUERY_TYPE = [
     QueryType.F3411v22aUSSGetFlightDetails,
 ]
 
+# Different spherical models have different precisions: implementations may use a different model
+# than uss_qualifier. We thus accept an error margin of 0.7% around distance limits and thresholds
+# to avoid failing USSes for minor differences in precision whenever the relevant standard is not
+# prescriptive in that regard.
+DISTANCE_ERROR_TOLERANCE_FRACTION = 0.007
+
 
 class ScenarioCannotContinueError(Exception):
     def __init__(self, msg):
-        super(ScenarioCannotContinueError, self).__init__(msg)
+        super().__init__(msg)
 
 
 class TestRunCannotContinueError(Exception):
     def __init__(self, msg):
-        super(TestRunCannotContinueError, self).__init__(msg)
+        super().__init__(msg)
 
 
 class ScenarioPhase(str, Enum):
@@ -78,23 +86,23 @@ class ScenarioPhase(str, Enum):
     Complete = "Complete"
 
 
-class PendingCheck(object):
+class PendingCheck:
     _phase: ScenarioPhase
     _documentation: TestCheckDocumentation
     _step_report: TestStepReport
     _stop_fast: bool
-    _on_failed_check: Optional[Callable[[FailedCheck], None]]
-    _participants: List[ParticipantID]
+    _on_failed_check: Callable[[FailedCheck], None] | None
+    _participants: list[ParticipantID]
     _outcome_recorded: bool = False
 
     def __init__(
         self,
         phase: ScenarioPhase,
         documentation: TestCheckDocumentation,
-        participants: List[ParticipantID],
+        participants: list[ParticipantID],
         step_report: TestStepReport,
         stop_fast: bool,
-        on_failed_check: Optional[Callable[[FailedCheck], None]],
+        on_failed_check: Callable[[FailedCheck], None] | None,
     ):
         self._phase = phase
         self._documentation = documentation
@@ -114,8 +122,8 @@ class PendingCheck(object):
         self,
         summary: str,
         details: str = "",
-        query_timestamps: Optional[List[datetime]] = None,
-        additional_data: Optional[dict] = None,
+        query_timestamps: list[datetime] | None = None,
+        additional_data: dict | None = None,
     ) -> None:
         self._outcome_recorded = True
         if "severity" in self._documentation and self._documentation.severity:
@@ -175,17 +183,39 @@ class PendingCheck(object):
     def skip(self) -> None:
         self._outcome_recorded = True
 
+    def describe(self) -> str:
+        doc = self._documentation
+        severity = doc.severity or "NoSeverity"
+        url = doc.url
+        participant_str = (
+            f" for participants {', '.join(self._participants)}"
+            if getattr(self, "_participants", None)
+            else ""
+        )
+        url_str = f", doc: {url}" if url else ""
+        return f"'{doc.name} check' ({severity} severity involving {participant_str}) documented at {url_str})"
 
-def get_scenario_type_by_name(scenario_type_name: TestScenarioTypeName) -> Type:
+
+class ScenarioLogicError(Exception):
+    def __init__(self, msg: str):
+        super().__init__(msg)
+
+
+class ScenarioDidNotStopError(ScenarioLogicError):
+    def __init__(self, check: PendingCheck):
+        super().__init__(
+            f"Scenario did not stop as expected upon failed check: {check.describe()}"
+        )
+
+
+def get_scenario_type_by_name(scenario_type_name: TestScenarioTypeName) -> type:
     inspection.import_submodules(scenarios_module)
     scenario_type = inspection.get_module_object_by_name(
         parent_module=uss_qualifier_module, object_name=scenario_type_name
     )
     if not issubclass(scenario_type, TestScenario):
         raise NotImplementedError(
-            "Scenario type {} is not a subclass of the TestScenario base class".format(
-                scenario_type.__name__
-            )
+            f"Scenario type {scenario_type.__name__} is not a subclass of the TestScenario base class"
         )
     return scenario_type
 
@@ -198,17 +228,18 @@ class GenericTestScenario(ABC):
 
     declaration: TestScenarioDeclaration
     documentation: TestScenarioDocumentation
-    on_failed_check: Optional[Callable[[FailedCheck], None]] = None
+    on_failed_check: Callable[[FailedCheck], None] | None = None
+    time_context: TestTimeContext
 
-    resource_origins: Dict[ResourceID, str]
+    resource_origins: dict[ResourceID, str]
     """Map between local resource name (as defined in test scenario) to where that resource originated."""
 
     _phase: ScenarioPhase = ScenarioPhase.Undefined
-    _scenario_report: Optional[TestScenarioReport] = None
-    _current_case: Optional[TestCaseDocumentation] = None
-    _case_report: Optional[TestCaseReport] = None
-    _current_step: Optional[TestStepDocumentation] = None
-    _step_report: Optional[TestStepReport] = None
+    _scenario_report: TestScenarioReport | None = None
+    _current_case: TestCaseDocumentation | None = None
+    _case_report: TestCaseReport | None = None
+    _current_step: TestStepDocumentation | None = None
+    _step_report: TestStepReport | None = None
 
     _allow_undocumented_checks = False
     """When this variable is set to True, it allows undocumented checks to be executed by the scenario. This is primarly intended to simplify internal unit testing."""
@@ -219,11 +250,12 @@ class GenericTestScenario(ABC):
     def __init__(self):
         self.documentation = get_documentation(self.__class__)
         self._phase = ScenarioPhase.NotStarted
+        self.time_context = TestTimeContext()
 
     @staticmethod
     def make_test_scenario(
         declaration: TestScenarioDeclaration,
-        resource_pool: Dict[ResourceID, ResourceType],
+        resource_pool: dict[ResourceID, ResourceType],
     ) -> "TestScenario":
         scenario_type = get_scenario_type_by_name(declaration.scenario_type)
 
@@ -272,7 +304,7 @@ class GenericTestScenario(ABC):
     def me(self) -> str:
         return inspection.fullname(self.__class__)
 
-    def current_step_name(self) -> Optional[str]:
+    def current_step_name(self) -> str | None:
         if self._current_step:
             return self._current_step.name
         else:
@@ -288,7 +320,7 @@ class GenericTestScenario(ABC):
             cases=[],
         )
 
-    def _expect_phase(self, expected_phase: Union[ScenarioPhase, Set[ScenarioPhase]]):
+    def _expect_phase(self, expected_phase: ScenarioPhase | set[ScenarioPhase]):
         if isinstance(expected_phase, ScenarioPhase):
             expected_phase = {expected_phase}
         if self._phase not in expected_phase:
@@ -373,15 +405,6 @@ class GenericTestScenario(ABC):
             )
         self._begin_test_step(available_steps[name])
 
-    def begin_dynamic_test_step(self, step: TestStepDocumentation) -> None:
-        self._expect_phase(ScenarioPhase.ReadyForTestStep)
-        available_steps = {c.name: c for c in self._current_case.steps}
-        if "Dynamic" not in available_steps:
-            raise RuntimeError(
-                f'Test scenario `{self.me()}` was instructed to begin_dynamic_test_step "{step.name}" during test case "{self._current_case.name}", but there is no "Dynamic test step" declared in documentation.'
-            )
-        self._begin_test_step(step)
-
     def _begin_test_step(self, step: TestStepDocumentation) -> None:
         self._current_step = step
         self._step_report = TestStepReport(
@@ -394,7 +417,7 @@ class GenericTestScenario(ABC):
         self._case_report.steps.append(self._step_report)
         self._phase = ScenarioPhase.RunningTestStep
 
-    def record_queries(self, queries: List[fetch.Query]) -> None:
+    def record_queries(self, queries: list[fetch.Query]) -> None:
         for q in queries:
             self.record_query(q)
 
@@ -436,7 +459,7 @@ class GenericTestScenario(ABC):
     def check(
         self,
         name: str,
-        participants: Optional[Union[ParticipantID, List[ParticipantID]]] = None,
+        participants: ParticipantID | list[ParticipantID] | None = None,
     ) -> PendingCheck:
         if isinstance(participants, str):
             participants = [participants]
@@ -600,7 +623,7 @@ class TestScenario(GenericTestScenario):
     pass
 
 
-def get_scenario_type_name(scenario_type: Type[TestScenario]) -> TestScenarioTypeName:
+def get_scenario_type_name(scenario_type: type[TestScenario]) -> TestScenarioTypeName:
     full_name = fullname(scenario_type)
     if not issubclass(scenario_type, TestScenario):
         raise ValueError(f"{full_name} is not a TestScenario")
@@ -615,8 +638,8 @@ TestScenarioType = TypeVar("TestScenarioType", bound=TestScenario)
 
 
 def find_test_scenarios(
-    module, already_checked: Optional[Set[str]] = None
-) -> List[TestScenarioType]:
+    module, already_checked: set[str] | None = None
+) -> list[TestScenarioType]:
     if already_checked is None:
         already_checked = set()
     already_checked.add(module.__name__)

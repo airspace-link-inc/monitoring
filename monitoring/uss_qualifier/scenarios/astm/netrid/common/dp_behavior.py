@@ -1,7 +1,5 @@
 import math
-import re
 from datetime import datetime, timedelta
-from typing import List, Optional
 from urllib.parse import parse_qs, urlparse
 
 import arrow
@@ -35,7 +33,10 @@ from monitoring.uss_qualifier.scenarios.interuss.mock_uss.test_steps import (
     direction_filter,
     get_mock_uss_interactions,
 )
-from monitoring.uss_qualifier.scenarios.scenario import GenericTestScenario
+from monitoring.uss_qualifier.scenarios.scenario import (
+    DISTANCE_ERROR_TOLERANCE_FRACTION,
+    GenericTestScenario,
+)
 from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
@@ -46,14 +47,14 @@ class DisplayProviderBehavior(GenericTestScenario):
 
     SUB_TYPE = register_resource_type(400, "ISA")
 
-    _observers: List[RIDSystemObserver]
+    _observers: list[RIDSystemObserver]
     _mock_uss: MockUSSClient
 
-    _dss_wrapper: Optional[DSSWrapper]
+    _dss_wrapper: DSSWrapper | None
     _isa_id: str
-    _isa_area: List[s2sphere.LatLng]
+    _isa_area: list[s2sphere.LatLng]
 
-    _identification: Optional[USSIdentificationResource]
+    _identification: USSIdentificationResource | None
 
     def __init__(
         self,
@@ -62,15 +63,15 @@ class DisplayProviderBehavior(GenericTestScenario):
         id_generator: IDGeneratorResource,  # provides the ISA IS to be used
         dss_pool: DSSInstancesResource,
         isa: ServiceAreaResource,  # area for which the ISA is created
-        uss_identification: Optional[USSIdentificationResource] = None,
+        uss_identification: USSIdentificationResource | None = None,
     ):
         super().__init__()
         self._observers = observers.observers
         self._mock_uss = mock_uss.mock_uss
         self._dss_wrapper = DSSWrapper(self, dss_pool.dss_instances[0])
         self._isa_id = id_generator.id_factory.make_id(self.SUB_TYPE)
-        self._isa = isa.specification
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
+        self._isa = isa
+        self._isa_area = isa.s2_vertices()
         self._identification = uss_identification
 
         isa_center = geo.center_of_mass(self._isa_area)
@@ -83,25 +84,22 @@ class DisplayProviderBehavior(GenericTestScenario):
             Angle.from_degrees(1 * degree_per_km)
         )
 
-        limit_side_km = self._rid_version.max_diagonal_km / math.sqrt(2)
+        limit_diagonal_length_ok = self._rid_version.max_diagonal_km * (
+            1 - DISTANCE_ERROR_TOLERANCE_FRACTION
+        )
+
+        limit_side_km = limit_diagonal_length_ok / math.sqrt(2)
         self._limit_rect = LatLngRect.from_point(isa_center).convolve_with_cap(
             Angle.from_degrees(limit_side_km * degree_per_km / 2)
         )
-        # Make sure the limit_rect is close to the allowed diagonal limit
-        assert (
-            self._rid_version.max_diagonal_km * 0.99
-            < geo.get_latlngrect_diagonal_km(self._limit_rect)
-            <= self._rid_version.max_diagonal_km
-        ), f"{geo.get_latlngrect_diagonal_km(self._limit_rect)} > {self._rid_version.max_diagonal_km}"
 
-        # Make the too big rect 1% larger than the allowed diagonal limit
-        self._too_big_rect = LatLngRect.from_point(isa_center).convolve_with_cap(
-            Angle.from_degrees(limit_side_km * 1.01 * degree_per_km / 2)
+        limit_diagonal_length_fail = self._rid_version.max_diagonal_km * (
+            1 + DISTANCE_ERROR_TOLERANCE_FRACTION
         )
-        assert (
-            geo.get_latlngrect_diagonal_km(self._too_big_rect)
-            > self._rid_version.max_diagonal_km
-        ), f"{geo.get_latlngrect_diagonal_km(self._too_big_rect)} <= {self._rid_version.max_diagonal_km}"
+
+        self._too_big_rect = LatLngRect.from_point(isa_center).convolve_with_cap(
+            Angle.from_degrees(limit_diagonal_length_fail * degree_per_km / 2)
+        )
 
     @property
     def _rid_version(self) -> RIDVersion:
@@ -132,12 +130,10 @@ class DisplayProviderBehavior(GenericTestScenario):
         self.end_test_step()
         self.end_test_case()
 
-        for obs in self._observers:
-            test_case_start_time = arrow.utcnow().datetime
-            # We run the entire test case for each provided observer
-            # (Otherwise we can't differentiate which queries are from which observer)
-            self.begin_test_case("Display Provider Behavior")
+        self.begin_test_case("Display Provider Behavior")
 
+        for obs in self._observers:
+            test_step_start_time = arrow.utcnow().datetime
             self.begin_test_step("Query acceptable diagonal area")
             # Query the DP for the exact area of the ISA
             self._step_query_ok_diagonal(obs)
@@ -153,7 +149,7 @@ class DisplayProviderBehavior(GenericTestScenario):
             self.end_test_step()
 
             self.begin_test_step("Verify query to SP")
-            self._step_validate_queries_to_sp(obs, test_case_start_time)
+            self._step_validate_queries_to_sp(obs, test_step_start_time)
             self.end_test_step()
 
         self.end_test_case()
@@ -166,7 +162,6 @@ class DisplayProviderBehavior(GenericTestScenario):
             return self._mock_uss.base_url + "/mock/ridsp/v2"
 
     def _step_create_isa(self):
-
         start_time = arrow.utcnow().datetime
         end_time = start_time + timedelta(minutes=5)
 
@@ -246,7 +241,7 @@ class DisplayProviderBehavior(GenericTestScenario):
                 )
 
     def _step_validate_queries_to_sp(
-        self, observer: RIDSystemObserver, test_case_start_time: datetime
+        self, observer: RIDSystemObserver, test_step_start_time: datetime
     ):
         def flight_search_filter(interaction: Interaction) -> bool:
             return (
@@ -257,7 +252,7 @@ class DisplayProviderBehavior(GenericTestScenario):
         interactions, q = get_mock_uss_interactions(
             self,
             self._mock_uss,
-            Time(test_case_start_time),
+            Time(test_step_start_time),
             direction_filter(QueryDirection.Incoming),
             flight_search_filter,
         )

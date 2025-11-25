@@ -1,11 +1,8 @@
-from typing import Optional
-
 from uas_standards.astm.f3548.v21.api import UssAvailabilityState
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.auth import InvalidTokenSignatureAuth
 from monitoring.monitorlib.fetch import QueryError
-from monitoring.monitorlib.geotemporal import Volume4D
 from monitoring.monitorlib.infrastructure import UTMClientSession
 from monitoring.monitorlib.inspection import fullname
 from monitoring.prober.infrastructure import register_resource_type
@@ -13,10 +10,8 @@ from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstance,
     DSSInstanceResource,
 )
-from monitoring.uss_qualifier.resources.astm.f3548.v21.planning_area import (
-    PlanningAreaResource,
-)
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
+from monitoring.uss_qualifier.resources.planning_area import PlanningAreaResource
 from monitoring.uss_qualifier.resources.resource import MissingResourceError
 from monitoring.uss_qualifier.scenarios.astm.utm.dss import test_step_fragments
 from monitoring.uss_qualifier.scenarios.astm.utm.dss.authentication.availability_api_validator import (
@@ -56,9 +51,9 @@ class AuthenticationValidation(TestScenario):
     _test_id: str
     """Base identifier for the entities that will be created"""
 
-    _scd_dss: Optional[DSSInstance] = None
-    _availability_dss: Optional[DSSInstance] = None
-    _constraints_dss: Optional[DSSInstance] = None
+    _scd_dss: DSSInstance | None = None
+    _availability_dss: DSSInstance | None = None
+    _constraints_dss: DSSInstance | None = None
 
     def __init__(
         self,
@@ -171,12 +166,12 @@ class AuthenticationValidation(TestScenario):
 
         self._pid = [self._scd_dss.participant_id]
         self._test_id = id_generator.id_factory.make_id(self.SUB_TYPE)
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
 
         # Build a ready-to-use 4D volume with no specified time for searching
         # the currently active subscriptions
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
+        self._planning_area_volume4d = self._planning_area.resolved_volume4d_with_times(
+            None, None
         )
 
         # Session that won't provide a token at all
@@ -350,7 +345,6 @@ class AuthenticationValidation(TestScenario):
         self.end_test_step()
 
     def _ensure_test_entities_dont_exist(self):
-
         if self._scd_dss:
             # Drop OIR's first: subscriptions may be tied to them and can't be deleted
             # as long as they exist
@@ -378,7 +372,6 @@ class AuthenticationValidation(TestScenario):
             )
 
     def _ensure_availability_is_unknown(self):
-
         with self.check("USS Availability can be requested", self._pid) as check:
             try:
                 availability, q = self._availability_dss.get_uss_availability(
@@ -393,11 +386,13 @@ class AuthenticationValidation(TestScenario):
                     query_timestamps=[q.request.timestamp for q in e.queries],
                 )
 
-        if availability.status != UssAvailabilityState.Unknown:
+        if availability and availability.status != UssAvailabilityState.Unknown:
             with self.check("USS Availability can be updated", self._pid) as check:
                 try:
                     availability, q = self._availability_dss.set_uss_availability(
-                        self._test_id, available=None, version=availability.version
+                        self._test_id,
+                        UssAvailabilityState.Unknown,
+                        availability.version,
                     )
                     self.record_query(q)
                 except QueryError as e:

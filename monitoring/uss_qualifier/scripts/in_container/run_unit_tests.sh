@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -eo pipefail
+
 # This script is intended to be called from within a Docker container running
 # mock_uss via the interuss/monitoring image.  In that context, this script is
 # the entrypoint into the test definition validation tool.
@@ -14,4 +16,4 @@ else
 fi
 cd "${BASEDIR}/../.." || exit 1
 
-pytest
+uv run pytest

@@ -10,7 +10,13 @@ from locust import between, task
 
 from monitoring.monitorlib import rid_v1
 from monitoring.monitorlib.testing import make_fake_url
-from monitoring.prober.rid.v1 import common
+
+VERTICES = [
+    {"lng": 130.6205, "lat": -23.6558},
+    {"lng": 130.6301, "lat": -23.6898},
+    {"lng": 130.6700, "lat": -23.6709},
+    {"lng": 130.6466, "lat": -23.6407},
+]
 
 
 class ISA(client.USS):
@@ -24,12 +30,12 @@ class ISA(client.USS):
         isa_uuid = str(uuid.uuid4())
 
         resp = self.client.put(
-            "/identification_service_areas/{}".format(isa_uuid),
+            f"/identification_service_areas/{isa_uuid}",
             json={
                 "extents": {
                     "spatial_volume": {
                         "footprint": {
-                            "vertices": common.VERTICES,
+                            "vertices": VERTICES,
                         },
                         "altitude_lo": 20,
                         "altitude_hi": 400,
@@ -53,12 +59,12 @@ class ISA(client.USS):
         time_start = datetime.datetime.now(datetime.UTC)
         time_end = datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=2)
         resp = self.client.put(
-            "/identification_service_areas/{}/{}".format(target_isa, target_version),
+            f"/identification_service_areas/{target_isa}/{target_version}",
             json={
                 "extents": {
                     "spatial_volume": {
                         "footprint": {
-                            "vertices": common.VERTICES,
+                            "vertices": VERTICES,
                         },
                         "altitude_lo": 20,
                         "altitude_hi": 400,
@@ -80,7 +86,7 @@ class ISA(client.USS):
         if not target_isa:
             print("Nothing to pick from isa_dict for GET")
             return
-        self.client.get("/identification_service_areas/{}".format(target_isa))
+        self.client.get(f"/identification_service_areas/{target_isa}")
 
     @task(1)
     def delete_isa(self):
@@ -89,7 +95,7 @@ class ISA(client.USS):
             print("Nothing to pick from isa_dict for DELETE")
             return
         self.client.delete(
-            "/identification_service_areas/{}/{}".format(target_isa, target_version)
+            f"/identification_service_areas/{target_isa}/{target_version}"
         )
 
     def checkout_isa(self):

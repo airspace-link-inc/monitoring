@@ -1,17 +1,17 @@
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any
 
 import s2sphere
 
 from monitoring.monitorlib.fetch.rid import Subscription
 from monitoring.monitorlib.mutate.rid import ChangedSubscription
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources import VerticesResource
 from monitoring.uss_qualifier.resources.astm.f3411.dss import DSSInstanceResource
 from monitoring.uss_qualifier.resources.communications import ClientIdentityResource
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
 from monitoring.uss_qualifier.resources.netrid.service_area import ServiceAreaResource
+from monitoring.uss_qualifier.resources.volume import VolumeResource
 from monitoring.uss_qualifier.scenarios.astm.netrid.dss_wrapper import DSSWrapper
 from monitoring.uss_qualifier.scenarios.scenario import GenericTestScenario
 from monitoring.uss_qualifier.suites.suite import ExecutionContext
@@ -30,26 +30,26 @@ class SubscriptionSimple(GenericTestScenario):
     # The value for 'owner' we'll expect the DSS to set on subscriptions
     _client_identity: ClientIdentityResource
 
-    _test_subscription_ids: List[str]
+    _test_subscription_ids: list[str]
 
     # Base parameters used for subscription creation variations
-    _default_creation_params: Dict[str, Any]
+    _default_creation_params: dict[str, Any]
 
     # Effective parameters used for each subscription, indexed by subscription ID
-    _sub_params_by_sub_id: Dict[str, Dict[str, Any]]
+    _sub_params_by_sub_id: dict[str, dict[str, Any]]
 
     # Keep track of the latest subscription returned by the DSS
-    _current_subscriptions: Dict[str, Subscription]
+    _current_subscriptions: dict[str, Subscription]
 
     # An area designed to be too big to be allowed to search by the DSS
-    _problematically_big_area: List[s2sphere.LatLng]
+    _problematically_big_area: list[s2sphere.LatLng]
 
     def __init__(
         self,
         dss: DSSInstanceResource,
         id_generator: IDGeneratorResource,
         isa: ServiceAreaResource,
-        problematically_big_area: VerticesResource,
+        problematically_big_area: VolumeResource,
         client_identity: ClientIdentityResource,
     ):
         """
@@ -65,8 +65,8 @@ class SubscriptionSimple(GenericTestScenario):
         self._dss = dss.dss_instance
         self._dss_wrapper = DSSWrapper(self, self._dss)
         self._base_sub_id = id_generator.id_factory.make_id(self.SUB_TYPE)
-        self._isa = isa.specification
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
+        self._isa = isa
+        self._isa_area = isa.s2_vertices()
         # List of vertices that has the same first and last point:
         # Used to validate some special-case handling by the DSS
         self._isa_area_loop = self._isa_area.copy()
@@ -77,10 +77,9 @@ class SubscriptionSimple(GenericTestScenario):
             self._base_sub_id[:-1] + f"{i}" for i in range(4)
         ]
 
-        self._problematically_big_area = [
-            vertex.as_s2sphere()
-            for vertex in problematically_big_area.specification.vertices
-        ]
+        self._problematically_big_area = (
+            problematically_big_area.specification.s2_vertices()
+        )
 
         self._client_identity = client_identity
 
@@ -215,7 +214,7 @@ class SubscriptionSimple(GenericTestScenario):
         all_set_params["sub_id"] = self._test_subscription_ids[3]
         self._create_sub_with_params(all_set_params)
 
-    def _create_sub_with_params(self, creation_params: Dict[str, Any]):
+    def _create_sub_with_params(self, creation_params: dict[str, Any]):
         with self.check(
             "Create subscription", [self._dss_wrapper.participant_id]
         ) as check:
@@ -254,7 +253,7 @@ class SubscriptionSimple(GenericTestScenario):
         self,
         sub_id: str,
         creation_resp_under_test: ChangedSubscription,
-        creation_params: Dict[str, Any],
+        creation_params: dict[str, Any],
         was_mutated: bool,
     ):
         """
@@ -517,9 +516,9 @@ class SubscriptionSimple(GenericTestScenario):
         self,
         sub_id: str,
         sub_under_test: Subscription,
-        creation_params: Dict[str, Any],
+        creation_params: dict[str, Any],
         was_mutated: bool,
-        query_timestamps: List[datetime],
+        query_timestamps: list[datetime],
     ):
         """Compare the passed subscription with the data we specified when creating it"""
         self._validate_subscription(
@@ -548,9 +547,9 @@ class SubscriptionSimple(GenericTestScenario):
         self,
         sub_id: str,
         sub_under_test: Subscription,
-        creation_params: Dict[str, Any],
+        creation_params: dict[str, Any],
         was_mutated: bool,
-        query_timestamps: List[datetime],
+        query_timestamps: list[datetime],
     ):
         """
         Validate the subscription against the parameters used to create it.

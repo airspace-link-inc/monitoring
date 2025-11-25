@@ -1,7 +1,3 @@
-from typing import Optional
-
-import arrow
-
 from monitoring.monitorlib import geo
 from monitoring.prober.infrastructure import register_resource_type
 from monitoring.uss_qualifier.resources.astm.f3411.dss import DSSInstanceResource
@@ -37,9 +33,10 @@ class ISASubscriptionInteractions(GenericTestScenario):
             ISASubscriptionInteractions.SUB_TYPE
         )
 
-        self._isa_version: Optional[str] = None
-        self._isa = isa.specification
-        self._isa_area = [vertex.as_s2sphere() for vertex in self._isa.footprint]
+        self._isa_version: str | None = None
+        self._isa = isa
+        self._isa_area = isa.s2_vertices()
+
         self._slight_overlap_area = geo.generate_slight_overlap_area(self._isa_area)
 
         self._isa_params = dict(
@@ -61,7 +58,7 @@ class ISASubscriptionInteractions(GenericTestScenario):
         )
 
     def run(self, context: ExecutionContext):
-        self._shift_resources_time_relative_to_now()
+        self._resolve_isa_time_bounds()
 
         self.begin_test_scenario(context)
 
@@ -93,12 +90,12 @@ class ISASubscriptionInteractions(GenericTestScenario):
         self.end_test_case()
         self.end_test_scenario()
 
-    def _shift_resources_time_relative_to_now(self):
-        now = arrow.utcnow().datetime
-        self._isa_params["start_time"] = self._isa.shifted_time_start(now)
-        self._isa_params["end_time"] = self._isa.shifted_time_end(now)
-        self._sub_params["start_time"] = self._isa.shifted_time_start(now)
-        self._sub_params["end_time"] = self._isa.shifted_time_end(now)
+    def _resolve_isa_time_bounds(self):
+        start, end = self._isa.resolved_time_bounds(self.time_context.evaluate_now())
+        self._isa_params["start_time"] = start
+        self._isa_params["end_time"] = end
+        self._sub_params["start_time"] = start
+        self._sub_params["end_time"] = end
 
     def _new_subscription_in_isa_step(self):
         """
@@ -178,7 +175,6 @@ class ISASubscriptionInteractions(GenericTestScenario):
             "Response to the mutation of the ISA contains subscription ID",
             [self._dss.participant_id],
         ) as check:
-
             subs_to_mutated_isa = {}
             for returned_subscriber in mutated_isa.dss_query.subscribers:
                 for sub_in_subscriber in returned_subscriber.raw.subscriptions:
@@ -231,7 +227,6 @@ class ISASubscriptionInteractions(GenericTestScenario):
             "Response to the deletion of the ISA contains subscription ID",
             [self._dss.participant_id],
         ) as check:
-
             subs_to_deleted_isa = {}
             for returned_subscriber in deleted_isa.dss_query.subscribers:
                 for sub_in_subscriber in returned_subscriber.raw.subscriptions:
@@ -329,6 +324,20 @@ class ISASubscriptionInteractions(GenericTestScenario):
                 **self._sub_params,
             )
 
+        with self.check(
+            "Subscription for the ISA's area mentions the ISA",
+            [self._dss.participant_id],
+        ) as check:
+            if self._isa_id not in [isa.id for isa in created_subscription.isas]:
+                check.record_failed(
+                    summary="Subscription response does not include the freshly created ISA",
+                    details=f"The subscription created for the area {self._isa_area} is expected to contain the ISA created for this same area. The returned subscription did not mention it.",
+                    query_timestamps=[
+                        created_isa.dss_query.query.request.timestamp,
+                        created_subscription.query.request.timestamp,
+                    ],
+                )
+
         # Mutate the subscription towards the ISA boundary
         with self.check(
             "Mutate the subscription towards the ISA boundary",
@@ -343,13 +352,13 @@ class ISASubscriptionInteractions(GenericTestScenario):
 
         # Check the subscription
         with self.check(
-            "Subscription for the ISA's area mentions the ISA",
+            "Subscription that only barely overlaps the ISA contains the ISA",
             [self._dss.participant_id],
         ) as check:
             if self._isa_id not in [isa.id for isa in mutated_subscription.isas]:
                 check.record_failed(
-                    summary="Subscription response does not include the freshly created ISA",
-                    details=f"The subscription created for the area {self._isa_area} is expected to contain the ISA created for this same area. The returned subscription did not mention it.",
+                    summary="Subscription response does not include the ISA it has a small overlap with",
+                    details=f"The subscription created for the area {self._isa_area} is expected to contain the ISA, given it slightly overlaps. The returned subscription did not mention it.",
                     query_timestamps=[
                         created_isa.dss_query.query.request.timestamp,
                         created_subscription.query.request.timestamp,
@@ -387,7 +396,6 @@ class ISASubscriptionInteractions(GenericTestScenario):
             "Response to the mutation of the ISA contains subscription ID",
             [self._dss.participant_id],
         ) as check:
-
             subs_to_mutated_isa = {}
             for returned_subscriber in mutated_isa.dss_query.subscribers:
                 for sub_in_subscriber in returned_subscriber.raw.subscriptions:
@@ -442,7 +450,6 @@ class ISASubscriptionInteractions(GenericTestScenario):
             "Response to the deletion of the ISA contains subscription ID",
             [self._dss.participant_id],
         ) as check:
-
             subs_to_deleted_isa = {}
             for returned_subscriber in deleted_isa.dss_query.subscribers:
                 for sub_in_subscriber in returned_subscriber.raw.subscriptions:

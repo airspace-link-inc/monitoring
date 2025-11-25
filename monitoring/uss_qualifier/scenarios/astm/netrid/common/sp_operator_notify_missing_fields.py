@@ -1,6 +1,3 @@
-from datetime import datetime
-from typing import List, Optional
-
 import arrow
 from requests.exceptions import RequestException
 from s2sphere import LatLngRect
@@ -10,13 +7,10 @@ from monitoring.monitorlib.rid import RIDVersion
 from monitoring.monitorlib.rid_automated_testing.injection_api import (
     MANDATORY_POSITION_FIELDS,
     MANDATORY_TELEMETRY_FIELDS,
-    TestFlight,
 )
-from monitoring.uss_qualifier.resources.astm.f3411.dss import DSSInstancesResource
 from monitoring.uss_qualifier.resources.netrid import (
     EvaluationConfigurationResource,
     FlightDataResource,
-    NetRIDObserversResource,
     NetRIDServiceProviders,
 )
 from monitoring.uss_qualifier.scenarios.astm.netrid import (
@@ -42,8 +36,8 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
     _service_providers: NetRIDServiceProviders
     _evaluation_configuration: EvaluationConfigurationResource
 
-    _injected_flights: List[InjectedFlight]
-    _injected_tests: List[InjectedTest]
+    _injected_flights: list[InjectedFlight]
+    _injected_tests: list[InjectedTest]
 
     def __init__(
         self,
@@ -71,6 +65,11 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
         for field in MANDATORY_TELEMETRY_FIELDS + [
             f"position.{f}" for f in MANDATORY_POSITION_FIELDS
         ]:
+            if field == "timestamp":
+                # TODO: See #1042: Telemetry may be used as timing for data
+                # delivery, blanking it may confuse USSs
+                continue
+
             self._frozen_flights_data = self._flights_data.truncate_flights_field(
                 field
             ).freeze_flights()
@@ -90,6 +89,10 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
 
             self._poll_during_flights()
 
+            self.begin_test_step("Intermediate cleanup")
+            self._cleanup()
+            self.end_test_step()
+
         self.end_test_case()
         self.end_test_scenario()
 
@@ -102,7 +105,7 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
                 timestamp = telemetry.get("timestamp", None)
                 if timestamp:
                     start_time = min(start_time, timestamp.datetime)
-                    end_time = max(start_time, timestamp.datetime)
+                    end_time = max(end_time, timestamp.datetime)
 
         return start_time, end_time
 
@@ -157,7 +160,6 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
         unobserved_notifications = evaluator.remaining_notifications_to_observe()
 
         for service_provider in self._service_providers.service_providers:
-
             with self.check(
                 "All injected flights have generated user notifications",
                 [service_provider.participant_id],
@@ -169,8 +171,7 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
                     )
         self.end_test_step()
 
-    def cleanup(self):
-        self.begin_cleanup()
+    def _cleanup(self):
         while self._injected_tests:
             injected_test = self._injected_tests.pop()
             matching_sps = [
@@ -199,4 +200,8 @@ class SpOperatorNotifyMissingFields(GenericTestScenario):
                     summary="Error while trying to delete test flight",
                     details=f"While trying to delete a test flight from {sp.participant_id}, encountered error:\n{stacktrace}",
                 )
+
+    def cleanup(self):
+        self.begin_cleanup()
+        self._cleanup()
         self.end_cleanup()

@@ -1,6 +1,3 @@
-from typing import Dict, Optional
-
-import arrow
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.clients.flight_planning.client import FlightPlannerClient
@@ -11,7 +8,6 @@ from monitoring.monitorlib.clients.flight_planning.flight_info import (
 from monitoring.monitorlib.clients.flight_planning.flight_info_template import (
     FlightInfoTemplate,
 )
-from monitoring.monitorlib.temporal import Time, TimeDuringTest
 from monitoring.uss_qualifier.resources.astm.f3548.v21 import DSSInstanceResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import DSSInstance
 from monitoring.uss_qualifier.resources.flight_planning import FlightIntentsResource
@@ -30,10 +26,7 @@ from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
 class SoloHappyPath(TestScenario):
-
-    times: Dict[TimeDuringTest, Time]
-
-    flight1_id: Optional[str] = None
+    flight1_id: str | None = None
     flight1_planned: FlightInfoTemplate
     flight1_activated: FlightInfoTemplate
 
@@ -44,7 +37,7 @@ class SoloHappyPath(TestScenario):
         self,
         tested_uss: FlightPlannerResource,
         dss: DSSInstanceResource,
-        flight_intents: Optional[FlightIntentsResource] = None,
+        flight_intents: FlightIntentsResource | None = None,
     ):
         super().__init__()
         self.tested_uss = tested_uss.client
@@ -84,11 +77,6 @@ class SoloHappyPath(TestScenario):
             setattr(self, efi.intent_id, templates[efi.intent_id])
 
     def run(self, context: ExecutionContext):
-        self.times = {
-            TimeDuringTest.StartOfTestRun: Time(context.start_time),
-            TimeDuringTest.StartOfScenario: Time(arrow.utcnow().datetime),
-        }
-
         self.begin_test_scenario(context)
 
         # TODO(#751): Implement scenario

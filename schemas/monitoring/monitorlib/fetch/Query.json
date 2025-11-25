@@ -72,6 +72,7 @@
         "interuss.automated_testing.flight_planning.v1.ClearArea",
         "interuss.automated_testing.flight_planning.v1.UpsertFlightPlan",
         "interuss.automated_testing.flight_planning.v1.DeleteFlightPlan",
+        "interuss.automated_testing.flight_planning.v1.QueryUserNotifications",
         "interuss.automated_testing.geospatial_map.v1.QueryGeospatialMap",
         "interuss.automated_testing.rid.v1.observation.getDisplayData",
         "interuss.automated_testing.rid.v1.observation.getDetails",
@@ -84,7 +85,8 @@
         "interuss.deprecated_scd_injection.v1.getStatus",
         "interuss.deprecated_scd_injection.v1.injectFlight",
         "interuss.deprecated_scd_injection.v1.deleteFlight",
-        "interuss.deprecated_scd_injection.v1.clearArea"
+        "interuss.deprecated_scd_injection.v1.clearArea",
+        "interuss.none"
       ],
       "type": [
         "string",

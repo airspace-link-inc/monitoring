@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List, Optional
 
 from implicitdict import ImplicitDict
 from uas_standards.astm.f3548.v21.api import (
@@ -42,8 +41,8 @@ class OIRValidator:
     Scenario in which this validator is being used. Will be used to register checks.
     """
 
-    _oir_params: Optional[PutOperationalIntentReferenceParameters]
-    _pid: List[str]
+    _oir_params: PutOperationalIntentReferenceParameters | None
+    _pid: list[str]
     """Participant ID(s) to use for the checks"""
 
     def __init__(
@@ -51,8 +50,8 @@ class OIRValidator:
         main_check: PendingCheck,
         scenario: TestScenario,
         expected_manager: str,
-        participant_id: List[str],
-        oir_params: Optional[PutOperationalIntentReferenceParameters],
+        participant_id: list[str],
+        oir_params: PutOperationalIntentReferenceParameters | None,
     ):
         self._main_check = main_check
         self._scenario = scenario
@@ -92,10 +91,10 @@ class OIRValidator:
         expected_entity_id: EntityID,
         dss_oir: OperationalIntentReference,
         t_dss: datetime,
-        previous_version: Optional[int],
-        expected_version: Optional[int],
-        previous_ovn: Optional[str],
-        expected_ovn: Optional[str],
+        previous_version: int | None,
+        expected_version: int | None,
+        previous_ovn: str | None,
+        expected_ovn: str | None,
     ) -> None:
         """
         Args:
@@ -114,7 +113,7 @@ class OIRValidator:
             if dss_oir.id != expected_entity_id:
                 self._fail_sub_check(
                     check,
-                    summary=f"Returned OIR ID is incorrect",
+                    summary="Returned OIR ID is incorrect",
                     details=f"Expected OIR ID {expected_entity_id}, got {dss_oir.id}",
                     t_dss=t_dss,
                 )
@@ -240,6 +239,17 @@ class OIRValidator:
                         t_dss=t_dss,
                     )
 
+        with self._scenario.check(
+            "Returned operational intent reference has a version", self._pid
+        ) as check:
+            if "version" not in dss_oir or dss_oir.version is None:
+                self._fail_sub_check(
+                    check,
+                    summary="Returned OIR has no version",
+                    details="The operational intent reference returned by the DSS has no version when it should have one",
+                    t_dss=t_dss,
+                )
+
         # If the previous version is not None, we are dealing with a mutation:
         if previous_version is not None:
             with self._scenario.check(
@@ -269,8 +279,18 @@ class OIRValidator:
                         t_dss=t_dss,
                     )
 
+        with self._scenario.check(
+            "Returned operational intent reference state is correct", self._pid
+        ) as check:
+            if dss_oir.state != self._oir_params.state:
+                self._fail_sub_check(
+                    check,
+                    summary="Returned OIR state is incorrect",
+                    details=f"Expected: {self._oir_params.state}, got {dss_oir.state}",
+                    t_dss=t_dss,
+                )
+
         # TODO add check for:
-        #  - state
         #  - subscription ID of the OIR (based on passed parameters, if these were set)
 
     def _validate_put_oir_response_schema(
@@ -471,7 +491,6 @@ class OIRValidator:
         expected_ovn: str,
         expected_version: int,
     ) -> None:
-
         t_dss = deleted_oir.request.timestamp
 
         # Validate the response schema

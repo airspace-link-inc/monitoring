@@ -1,5 +1,4 @@
 import math
-from typing import List, Optional, Union
 
 import s2sphere
 from pykml.factory import KML_ElementMaker as kml
@@ -40,7 +39,7 @@ def _altitude_mode_of(altitude: Altitude) -> str:
         )
 
 
-def _distance_value_of(distance: Union[Altitude, Radius]) -> float:
+def _distance_value_of(distance: Altitude | Radius) -> float:
     if distance.units == DistanceUnits.M:
         return distance.value
     elif distance.units == DistanceUnits.FT:
@@ -51,10 +50,10 @@ def _distance_value_of(distance: Union[Altitude, Radius]) -> float:
 
 def make_placemark_from_volume(
     v4: Volume4D,
-    name: Optional[str] = None,
-    style_url: Optional[str] = None,
-    description: Optional[str] = None,
-) -> kml.Placemark:
+    name: str | None = None,
+    style_url: str | None = None,
+    description: str | None = None,
+):
     if "outline_polygon" in v4.volume and v4.volume.outline_polygon:
         vertices = v4.volume.outline_polygon.vertices
     elif "outline_circle" in v4.volume and v4.volume.outline_circle:
@@ -70,6 +69,9 @@ def make_placemark_from_volume(
         ]
     else:
         raise NotImplementedError("Volume footprint type not supported")
+
+    if not vertices:
+        raise NotImplementedError("No vertices found")
 
     # Create placemark
     args = []
@@ -122,7 +124,7 @@ def make_placemark_from_volume(
                     _altitude_mode_of(
                         v4.volume.altitude_lower
                         if v4.volume.altitude_lower
-                        else AltitudeDatum.SFC
+                        else Altitude(reference=AltitudeDatum.SFC)
                     )
                 ),
                 kml.outerBoundaryIs(
@@ -143,7 +145,7 @@ def make_placemark_from_volume(
                     _altitude_mode_of(
                         v4.volume.altitude_upper
                         if v4.volume.altitude_upper
-                        else AltitudeDatum.SFC
+                        else Altitude(reference=AltitudeDatum.SFC)
                     )
                 ),
                 kml.outerBoundaryIs(
@@ -161,6 +163,8 @@ def make_placemark_from_volume(
     # We can only create the sides of the volume if the altitude references are the same
     if (
         make_sides
+        and v4.volume.altitude_lower
+        and v4.volume.altitude_upper
         and v4.volume.altitude_lower.reference == v4.volume.altitude_upper.reference
     ):
         indices = list(range(len(vertices)))
@@ -188,7 +192,7 @@ def make_placemark_from_volume(
     return placemark
 
 
-def query_styles() -> List[kml.Style]:
+def query_styles() -> list:
     """Provides KML styles for query areas."""
     return [
         kml.Style(

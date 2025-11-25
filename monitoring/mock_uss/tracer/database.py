@@ -1,6 +1,5 @@
 import json
 from datetime import timedelta
-from typing import Dict
 
 from implicitdict import ImplicitDict, StringBasedTimeDelta
 
@@ -23,14 +22,14 @@ class Database(ImplicitDict):
     cleanup_initiated: bool = False
     """True only when a process has already initiated cleanup"""
 
-    observation_areas: Dict[ObservationAreaID, ObservationArea]
+    observation_areas: dict[ObservationAreaID, ObservationArea]
     """Set of active observation areas, keyed by ID"""
 
     polling_interval: StringBasedTimeDelta = StringBasedTimeDelta(timedelta(seconds=15))
     """Interval at which polling of observation areas should occur"""
 
 
-db = SynchronizedValue(
+db = SynchronizedValue[Database](
     Database(observation_areas={}),
     decoder=lambda b: ImplicitDict.parse(json.loads(b.decode("utf-8")), Database),
 )

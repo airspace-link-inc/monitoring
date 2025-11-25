@@ -1,13 +1,11 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional, Tuple
 
 import arrow
 from implicitdict import ImplicitDict
 from uas_standards.interuss.automated_testing.rid.v1.injection import ChangeTestResponse
 
 from monitoring.monitorlib import geo
-from monitoring.monitorlib.rid import RIDVersion
 from monitoring.monitorlib.rid_automated_testing.injection_api import (
     CreateTestParameters,
     TestFlight,
@@ -24,6 +22,7 @@ class InjectedFlight(ImplicitDict):
     test_id: str
     flight: TestFlight
     query_timestamp: datetime
+    query_duration_s: float
 
 
 class InjectedTest(ImplicitDict):
@@ -36,13 +35,13 @@ def inject_flights(
     test_scenario: TestScenario,
     flights_data_res: FlightDataResource,
     service_providers_res: NetRIDServiceProviders,
-) -> Tuple[List[InjectedFlight], List[InjectedTest]]:
+) -> tuple[list[InjectedFlight], list[InjectedTest]]:
     test_id = str(uuid.uuid4())
     test_flights = flights_data_res.get_test_flights()
     service_providers = service_providers_res.service_providers
 
-    injected_flights: List[InjectedFlight] = []
-    injected_tests: List[InjectedTest] = []
+    injected_flights: list[InjectedFlight] = []
+    injected_tests: list[InjectedTest] = []
 
     if len(service_providers) > len(test_flights):
         raise ValueError(
@@ -66,7 +65,7 @@ def inject_flights(
             if "json" not in query.response or query.response.json is None:
                 check.record_failed(
                     summary="Response to test flight injection request did not contain a JSON body",
-                    details=f"Expected a JSON body in response to flight injection request",
+                    details="Expected a JSON body in response to flight injection request",
                     query_timestamps=[query.request.timestamp],
                 )
 
@@ -90,21 +89,35 @@ def inject_flights(
                     test_id=test_id,
                     flight=TestFlight(flight),
                     query_timestamp=query.request.timestamp,
+                    query_duration_s=query.response.elapsed_s,
                 )
             )
-            earliest_time = min(t.timestamp.datetime for t in flight.telemetry)
-            latest_time = max(t.timestamp.datetime for t in flight.telemetry)
-            if start_time is None or earliest_time < start_time:
-                start_time = earliest_time
-            if end_time is None or latest_time > end_time:
-                end_time = latest_time
-        now = arrow.utcnow().datetime
-        dt0 = (start_time - now).total_seconds()
-        dt1 = (end_time - now).total_seconds()
-        test_scenario.record_note(
-            f"{test_id} time range",
-            f"Injected flights start {dt0:.1f} seconds from now and end {dt1:.1f} seconds from now",
-        )
+            timestamps = [
+                t.timestamp.datetime
+                for t in flight.telemetry
+                if t.has_field_with_value("timestamp")
+            ]
+            if timestamps:
+                earliest_time = min(timestamps)
+                latest_time = max(timestamps)
+                if start_time is None or earliest_time < start_time:
+                    start_time = earliest_time
+                if end_time is None or latest_time > end_time:
+                    end_time = latest_time
+
+        if start_time and end_time:
+            now = arrow.utcnow().datetime
+            dt0 = (start_time - now).total_seconds()
+            dt1 = (end_time - now).total_seconds()
+            test_scenario.record_note(
+                f"{test_id} time range",
+                f"Injected flights start {dt0:.1f} seconds from now and end {dt1:.1f} seconds from now",
+            )
+        else:
+            test_scenario.record_note(
+                f"{test_id} time range",
+                "Injected flights have no timestamps",
+            )
 
     # Make sure the injected flights can be identified correctly by the test harness
     with test_scenario.check("Identifiable flights") as check:
@@ -120,7 +133,7 @@ def inject_flights(
     return injected_flights, injected_tests
 
 
-def injected_flights_errors(injected_flights: List[InjectedFlight]) -> List[str]:
+def injected_flights_errors(injected_flights: list[InjectedFlight]) -> list[str]:
     """Determine whether each telemetry in each injected flight can be easily distinguished from each other.
 
     Args:
@@ -128,7 +141,7 @@ def injected_flights_errors(injected_flights: List[InjectedFlight]) -> List[str]
 
     Returns: List of error messages, or an empty list if no errors.
     """
-    errors: List[str] = []
+    errors: list[str] = []
     for f1, injected_flight in enumerate(injected_flights):
         for t1, injected_telemetry in enumerate(injected_flight.flight.telemetry):
             for t2, other_telemetry in enumerate(
@@ -156,7 +169,7 @@ def get_user_notifications(
     service_providers_res: NetRIDServiceProviders,
     after: datetime,
     before: datetime,
-) -> dict[str, List[str]]:
+) -> dict[str, list[str]]:
     service_providers = service_providers_res.service_providers
 
     notifications = {}

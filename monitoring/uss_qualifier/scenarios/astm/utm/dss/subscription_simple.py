@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-from typing import Dict, List
 
 from uas_standards.astm.f3548.v21.api import Subscription, SubscriptionID
 from uas_standards.astm.f3548.v21.constants import Scope
@@ -9,13 +8,11 @@ from monitoring.monitorlib.geo import Polygon, Volume3D
 from monitoring.monitorlib.geotemporal import Volume4D
 from monitoring.monitorlib.mutate.scd import MutatedSubscription
 from monitoring.prober.infrastructure import register_resource_type
-from monitoring.uss_qualifier.resources import VerticesResource
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import DSSInstanceResource
-from monitoring.uss_qualifier.resources.astm.f3548.v21.planning_area import (
-    SubscriptionParams,
-)
 from monitoring.uss_qualifier.resources.interuss.id_generator import IDGeneratorResource
+from monitoring.uss_qualifier.resources.planning_area import SubscriptionParams
+from monitoring.uss_qualifier.resources.volume import VolumeResource
 from monitoring.uss_qualifier.scenarios.astm.utm.dss import test_step_fragments
 from monitoring.uss_qualifier.scenarios.astm.utm.dss.fragments.sub.crud import (
     sub_create_query,
@@ -49,26 +46,28 @@ class SubscriptionSimple(TestScenario):
     # Base identifier for the subscriptions that will be created
     _base_sub_id: SubscriptionID
 
-    _test_subscription_ids: List[SubscriptionID]
+    _test_subscription_ids: list[SubscriptionID]
 
     # Base parameters used for subscription creation variations
     _sub_generation_params: SubscriptionParams
 
     # Effective parameters used for each subscription, indexed by subscription ID
-    _sub_params_by_sub_id: Dict[SubscriptionID, SubscriptionParams]
+    _sub_params_by_sub_id: dict[SubscriptionID, SubscriptionParams]
 
     # Keep track of the latest subscription returned by the DSS
-    _current_subscriptions: Dict[SubscriptionID, Subscription]
+    _current_subscriptions: dict[SubscriptionID, Subscription]
 
     # An area designed to be too big to be allowed to search by the DSS
     _problematically_big_area_vol: Polygon
+
+    _planning_area: PlanningAreaResource
 
     def __init__(
         self,
         dss: DSSInstanceResource,
         id_generator: IDGeneratorResource,
         planning_area: PlanningAreaResource,
-        problematically_big_area: VerticesResource,
+        problematically_big_area: VolumeResource,
     ):
         """
         Args:
@@ -84,12 +83,12 @@ class SubscriptionSimple(TestScenario):
         self._dss = dss.get_instance(scopes)
         self._pid = [self._dss.participant_id]
         self._base_sub_id = id_generator.id_factory.make_id(self.SUB_TYPE)
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
 
         # Build a ready-to-use 4D volume with no specified time for searching
         # the currently active subscriptions
-        self._planning_area_volume4d = Volume4D(
-            volume=self._planning_area.volume,
+        self._planning_area_volume4d = self._planning_area.resolved_volume4d_with_times(
+            None, None
         )
 
         # Prepare 4 different subscription ids:
@@ -98,7 +97,7 @@ class SubscriptionSimple(TestScenario):
         ]
 
         self._problematically_big_area_vol = Polygon(
-            vertices=problematically_big_area.specification.vertices
+            vertices=problematically_big_area.specification.vertices()
         )
 
         self._current_subscriptions = {}
@@ -367,7 +366,6 @@ class SubscriptionSimple(TestScenario):
         Mutate all existing subscriptions by updating their footprint.
         """
         for sub_id, sub in self._current_subscriptions.items():
-
             new_params = self._sub_params_by_sub_id[sub_id].copy()
 
             # Shift all previous vertices west by 0.001 degrees
@@ -478,7 +476,6 @@ class SubscriptionSimple(TestScenario):
     def _test_delete_sub_faulty(self):
         """Try to delete subscription in an incorrect way"""
         for sub_id in self._current_subscriptions.keys():
-
             del_missing_version = self._dss.delete_subscription(
                 sub_id=sub_id, sub_version=""
             )
@@ -586,7 +583,7 @@ class SubscriptionSimple(TestScenario):
         sub_under_test: Subscription,
         creation_params: SubscriptionParams,
         was_mutated: bool,
-        query_timestamps: List[datetime],
+        query_timestamps: list[datetime],
     ):
         """Compare the passed subscription with the data we specified when creating it"""
         self._validate_subscription(
@@ -617,7 +614,7 @@ class SubscriptionSimple(TestScenario):
         sub_under_test: Subscription,
         creation_params: SubscriptionParams,
         was_mutated: bool,
-        query_timestamps: List[datetime],
+        query_timestamps: list[datetime],
     ):
         """
         Validate the subscription against the parameters used to create it.
@@ -661,10 +658,13 @@ class SubscriptionSimple(TestScenario):
         with self.check(
             "Returned USS base URL has correct base URL", self._pid
         ) as check:
-            if sub_under_test.uss_base_url != self._planning_area.get_base_url():
+            if (
+                sub_under_test.uss_base_url
+                != self._planning_area.specification.get_base_url()
+            ):
                 check.record_failed(
                     "Returned USS Base URL does not match provided one",
-                    details=f"Provided: {self._planning_area.get_base_url()}, Returned: {sub_under_test.uss_base_url}",
+                    details=f"Provided: {self._planning_area.specification.get_base_url()}, Returned: {sub_under_test.uss_base_url}",
                     query_timestamps=query_timestamps,
                 )
 

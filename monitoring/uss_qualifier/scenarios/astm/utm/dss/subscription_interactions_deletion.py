@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta
-from typing import Dict, List
 
 from uas_standards.astm.f3548.v21.api import (
     EntityID,
@@ -11,9 +10,8 @@ from uas_standards.astm.f3548.v21.api import (
 from uas_standards.astm.f3548.v21.constants import Scope
 
 from monitoring.monitorlib.fetch import QueryError
-from monitoring.monitorlib.geotemporal import Volume4D
 from monitoring.monitorlib.testing import make_fake_url
-from monitoring.uss_qualifier.resources.astm.f3548.v21 import PlanningAreaResource
+from monitoring.uss_qualifier.resources import PlanningAreaResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import (
     DSSInstanceResource,
     DSSInstancesResource,
@@ -34,17 +32,18 @@ from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
 class SubscriptionInteractionsDeletion(TestScenario):
+    _oir_ids: list[EntityID]
+    _sub_ids: list[SubscriptionID]
 
-    _oir_ids: List[EntityID]
-    _sub_ids: List[SubscriptionID]
-
-    _current_subs: Dict[SubscriptionID, Subscription]
-    _current_oirs: Dict[EntityID, OperationalIntentReference]
+    _current_subs: dict[SubscriptionID, Subscription]
+    _current_oirs: dict[EntityID, OperationalIntentReference]
 
     _time_start: datetime
     _time_end: datetime
 
     _manager: str
+
+    _planning_area: PlanningAreaResource
 
     def __init__(
         self,
@@ -59,7 +58,7 @@ class SubscriptionInteractionsDeletion(TestScenario):
             Scope.StrategicCoordination: "create and delete subscriptions and operational intents"
         }
         self._dss = dss.get_instance(scopes)
-        self._planning_area = planning_area.specification
+        self._planning_area = planning_area
 
         self._secondary_instances = [
             dss.get_instance(scopes) for dss in other_instances.dss_instances
@@ -269,17 +268,31 @@ class SubscriptionInteractionsDeletion(TestScenario):
         self._current_subs = {}
         self._current_oirs = {}
 
-        self._ensure_clean_workspace_step()
+        self._ensure_clean_primary_workspace_step()
+        self._verify_clean_secondaries_step()
 
         self.end_test_case()
 
-    def _ensure_clean_workspace_step(self):
+    def _ensure_clean_primary_workspace_step(self):
         self.begin_test_step("Ensure clean workspace")
         self._clean_workspace()
         self.end_test_step()
 
+    def _verify_clean_secondaries_step(self):
+        self.begin_test_step("Verify secondary DSS instances are clean")
+        for dss in self._secondary_instances:
+            for oir_id in self._oir_ids:
+                test_step_fragments.verify_op_intent_does_not_exist(self, dss, oir_id)
+
+            for sub_id in self._sub_ids:
+                test_step_fragments.verify_subscription_does_not_exist(
+                    self, dss, sub_id
+                )
+
+        self.end_test_step()
+
     def _clean_workspace(self):
-        extents = Volume4D(volume=self._planning_area.volume)
+        extents = self._planning_area.resolved_volume4d_with_times(None, None)
         test_step_fragments.cleanup_active_oirs(
             self,
             self._dss,

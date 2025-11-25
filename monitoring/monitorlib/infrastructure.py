@@ -3,11 +3,10 @@ import datetime
 import functools
 import urllib.parse
 from enum import Enum
-from typing import Dict, List, Optional
 
 import jwt
 import requests
-from aiohttp import ClientResponse, ClientSession
+from aiohttp import ClientSession
 
 ALL_SCOPES = [
     "dss.write.identification_service_areas",
@@ -27,22 +26,26 @@ AuthSpec = str
 """Specification for means by which to obtain access tokens."""
 
 
-class AuthAdapter(object):
+class AuthAdapter:
     """Base class for an adapter that add JWTs to requests."""
 
     def __init__(self):
         self._tokens = {}
 
-    def issue_token(self, intended_audience: str, scopes: List[str]) -> str:
+    def issue_token(self, intended_audience: str, scopes: list[str]) -> str:
         """Subclasses must return a bearer token for the given audience."""
 
         raise NotImplementedError()
 
-    def get_headers(self, url: str, scopes: List[str] = None) -> Dict[str, str]:
+    def get_headers(self, url: str, scopes: list[str] | None = None) -> dict[str, str]:
         if scopes is None:
             scopes = ALL_SCOPES
         scopes = [s.value if isinstance(s, Enum) else s for s in scopes]
         intended_audience = urllib.parse.urlparse(url).hostname
+
+        if not intended_audience:
+            return {}
+
         scope_string = " ".join(scopes)
         if intended_audience not in self._tokens:
             self._tokens[intended_audience] = {}
@@ -57,11 +60,12 @@ class AuthAdapter(object):
         self._tokens[intended_audience][scope_string] = token
         return {"Authorization": "Bearer " + token}
 
-    def add_headers(self, request: requests.PreparedRequest, scopes: List[str]):
-        for k, v in self.get_headers(request.url, scopes).items():
-            request.headers[k] = v
+    def add_headers(self, request: requests.PreparedRequest, scopes: list[str]):
+        if request.url:
+            for k, v in self.get_headers(request.url, scopes).items():
+                request.headers[k] = v
 
-    def get_sub(self) -> Optional[str]:
+    def get_sub(self) -> str | None:
         """Retrieve `sub` claim from one of the existing tokens"""
         for _, tokens_by_scope in self._tokens.items():
             for token in tokens_by_scope.values():
@@ -85,14 +89,14 @@ class UTMClientSession(requests.Session):
     def __init__(
         self,
         prefix_url: str,
-        auth_adapter: Optional[AuthAdapter] = None,
-        timeout_seconds: Optional[float] = None,
+        auth_adapter: AuthAdapter | None = None,
+        timeout_seconds: float | None = None,
     ):
         super().__init__()
 
         self._prefix_url = prefix_url[0:-1] if prefix_url[-1] == "/" else prefix_url
         self.auth_adapter = auth_adapter
-        self.default_scopes = None
+        self.default_scopes: list[str] | None = None
         self.timeout_seconds = timeout_seconds or CLIENT_TIMEOUT
 
     # Overrides method on requests.Session
@@ -118,7 +122,7 @@ class UTMClientSession(requests.Session):
             def auth(
                 prepared_request: requests.PreparedRequest,
             ) -> requests.PreparedRequest:
-                if scopes:
+                if scopes and self.auth_adapter:
                     self.auth_adapter.add_headers(prepared_request, scopes)
                 return prepared_request
 
@@ -127,14 +131,20 @@ class UTMClientSession(requests.Session):
             kwargs["timeout"] = self.timeout_seconds
         return kwargs
 
-    def request(self, method, url, **kwargs):
+    def request(self, method, url, *args, **kwargs):
         if "auth" not in kwargs:
             kwargs = self.adjust_request_kwargs(kwargs)
 
-        return super().request(method, url, **kwargs)
+        return super().request(method, url, *args, **kwargs)
 
     def get_prefix_url(self):
         return self._prefix_url
+
+    def get(self, *args, **kwargs):
+        return super().get(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        return super().delete(*args, **kwargs)
 
 
 class AsyncUTMTestSession:
@@ -147,8 +157,8 @@ class AsyncUTMTestSession:
     def __init__(
         self,
         prefix_url: str,
-        auth_adapter: Optional[AuthAdapter] = None,
-        timeout_seconds: Optional[float] = None,
+        auth_adapter: AuthAdapter | None = None,
+        timeout_seconds: float | None = None,
     ):
         self._client = None
         loop = asyncio.get_event_loop()
@@ -156,15 +166,16 @@ class AsyncUTMTestSession:
 
         self._prefix_url = prefix_url[0:-1] if prefix_url[-1] == "/" else prefix_url
         self.auth_adapter = auth_adapter
-        self.default_scopes = None
+        self.default_scopes: list[str] | None = None
         self.timeout_seconds = timeout_seconds or CLIENT_TIMEOUT
 
     async def build_session(self):
         self._client = ClientSession()
 
     def close(self):
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(self._client.close())
+        if self._client:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(self._client.close())
 
     def adjust_request_kwargs(self, url, method, kwargs):
         if self.auth_adapter:
@@ -197,6 +208,10 @@ class AsyncUTMTestSession:
         url = self._prefix_url + url
         if "auth" not in kwargs:
             kwargs = self.adjust_request_kwargs(url, "PUT", kwargs)
+
+        if not self._client:
+            raise ValueError("Client is not ready")
+
         async with self._client.put(url, **kwargs) as response:
             return (
                 response.status,
@@ -209,6 +224,10 @@ class AsyncUTMTestSession:
         url = self._prefix_url + url
         if "auth" not in kwargs:
             kwargs = self.adjust_request_kwargs(url, "GET", kwargs)
+
+        if not self._client:
+            raise ValueError("Client is not ready")
+
         async with self._client.get(url, **kwargs) as response:
             return (
                 response.status,
@@ -221,6 +240,10 @@ class AsyncUTMTestSession:
         url = self._prefix_url + url
         if "auth" not in kwargs:
             kwargs = self.adjust_request_kwargs(url, "POST", kwargs)
+
+        if not self._client:
+            raise ValueError("Client is not ready")
+
         async with self._client.post(url, **kwargs) as response:
             return (
                 response.status,
@@ -233,6 +256,10 @@ class AsyncUTMTestSession:
         url = self._prefix_url + url
         if "auth" not in kwargs:
             kwargs = self.adjust_request_kwargs(url, "DELETE", kwargs)
+
+        if not self._client:
+            raise ValueError("Client is not ready")
+
         async with self._client.delete(url, **kwargs) as response:
             return (
                 response.status,
@@ -241,7 +268,7 @@ class AsyncUTMTestSession:
             )
 
 
-def default_scopes(scopes: List[str]):
+def default_scopes(scopes: list[str]):
     """Decorator for tests that modifies UTMClientSession args to use scopes.
 
     A test function decorated with this decorator will modify all arguments which
@@ -308,7 +335,7 @@ def default_scope(scope: str):
     return default_scopes([scope])
 
 
-def get_token_claims(headers: Dict) -> Dict:
+def get_token_claims(headers: dict) -> dict:
     auth_key = [key for key in headers if key.lower() == "authorization"]
     if len(auth_key) == 0:
         return {"error": "Missing Authorization header"}

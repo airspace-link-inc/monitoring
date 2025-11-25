@@ -1,7 +1,7 @@
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 
+import arrow
 import flask
 import requests.exceptions
 from implicitdict import ImplicitDict, StringBasedDateTime
@@ -17,8 +17,7 @@ from uas_standards.interuss.automated_testing.scd.v1.api import (
     DeleteFlightResponseResult,
 )
 
-import monitoring.mock_uss.uspace.flight_auth
-from monitoring.mock_uss import require_config_value, uspace, webapp
+from monitoring.mock_uss.app import require_config_value, webapp
 from monitoring.mock_uss.auth import requires_scope
 from monitoring.mock_uss.config import KEY_BASE_URL
 from monitoring.mock_uss.dynamic_configuration.configuration import get_locality
@@ -37,6 +36,11 @@ from monitoring.mock_uss.flights.planning import (
     lock_flight,
     release_flight_lock,
 )
+from monitoring.mock_uss.user_interactions.notifications import (
+    UserNotification,
+    UserNotificationType,
+)
+from monitoring.mock_uss.uspace import flight_auth
 from monitoring.monitorlib import versioning
 from monitoring.monitorlib.clients import scd as scd_client
 from monitoring.monitorlib.clients.flight_planning.flight_info import (
@@ -45,6 +49,7 @@ from monitoring.monitorlib.clients.flight_planning.flight_info import (
 )
 from monitoring.monitorlib.clients.flight_planning.planning import (
     ClearAreaResponse,
+    Conflict,
     FlightPlanStatus,
     PlanningActivityResponse,
     PlanningActivityResult,
@@ -68,13 +73,13 @@ DEADLOCK_TIMEOUT = timedelta(seconds=5)
 
 @webapp.route("/scdsc/v1/status", methods=["GET"])
 @requires_scope(SCOPE_SCD_QUALIFIER_INJECT)
-def scdsc_injection_status() -> Tuple[str, int]:
+def scdsc_injection_status() -> tuple[str, int]:
     """Implements USS status in SCD automated testing injection API."""
     json, code = injection_status()
     return flask.jsonify(json), code
 
 
-def injection_status() -> Tuple[dict, int]:
+def injection_status() -> tuple[dict, int]:
     return (
         {"status": "Ready", "version": versioning.get_code_version()},
         200,
@@ -83,13 +88,13 @@ def injection_status() -> Tuple[dict, int]:
 
 @webapp.route("/scdsc/v1/capabilities", methods=["GET"])
 @requires_scope(SCOPE_SCD_QUALIFIER_INJECT)
-def scdsc_scd_capabilities() -> Tuple[str, int]:
+def scdsc_scd_capabilities() -> tuple[str, int]:
     """Implements USS capabilities in SCD automated testing injection API."""
     json, code = scd_capabilities()
     return flask.jsonify(json), code
 
 
-def scd_capabilities() -> Tuple[dict, int]:
+def scd_capabilities() -> tuple[dict, int]:
     return (
         CapabilitiesResponse(
             capabilities=[
@@ -105,7 +110,7 @@ def scd_capabilities() -> Tuple[dict, int]:
 @webapp.route("/scdsc/v1/flights/<flight_id>", methods=["PUT"])
 @requires_scope(SCOPE_SCD_QUALIFIER_INJECT)
 @idempotent_request()
-def scdsc_inject_flight(flight_id: str) -> Tuple[str, int]:
+def scdsc_inject_flight(flight_id: str) -> tuple[str, int]:
     """Implements flight injection in SCD automated testing injection API."""
 
     def log(msg):
@@ -118,7 +123,7 @@ def scdsc_inject_flight(flight_id: str) -> Tuple[str, int]:
             raise ValueError("Request did not contain a JSON payload")
         req_body = ImplicitDict.parse(json, MockUSSInjectFlightRequest)
     except ValueError as e:
-        msg = "Create flight {} unable to parse JSON: {}".format(flight_id, e)
+        msg = f"Create flight {flight_id} unable to parse JSON: {e}"
         return msg, 400
     existing_flight = lock_flight(flight_id, log)
 
@@ -141,7 +146,7 @@ def scdsc_inject_flight(flight_id: str) -> Tuple[str, int]:
 def inject_flight(
     flight_id: str,
     new_flight: FlightRecord,
-    existing_flight: Optional[FlightRecord],
+    existing_flight: FlightRecord | None,
 ) -> PlanningActivityResponse:
     pid = os.getpid()
     locality = get_locality()
@@ -154,7 +159,7 @@ def inject_flight(
     )
 
     def unsuccessful(
-        result: PlanningActivityResult, msg: str
+        result: PlanningActivityResult, msg: str, has_conflict=None
     ) -> PlanningActivityResponse:
         return PlanningActivityResponse(
             flight_id=flight_id,
@@ -162,24 +167,30 @@ def inject_flight(
             activity_result=result,
             flight_plan_status=old_status,
             notes=msg,
+            has_conflict=has_conflict,
         )
 
     # Validate request
     try:
         if locality.is_uspace_applicable():
-            uspace.flight_auth.validate_request(new_flight.flight_info)
+            flight_auth.validate_request(new_flight.flight_info)
         validate_request(new_flight.op_intent)
     except PlanningError as e:
         return unsuccessful(PlanningActivityResult.Rejected, str(e))
 
     step_name = "performing unknown operation"
-    notes: Optional[str] = None
+    notes: str | None = None
     try:
         step_name = "checking F3548-21 operational intent"
         try:
-            key = check_op_intent(new_flight, existing_flight, locality, log)
+            key, has_conflict = check_op_intent(
+                new_flight, existing_flight, locality, log
+            )
         except PlanningError as e:
-            return unsuccessful(PlanningActivityResult.Rejected, str(e))
+            return unsuccessful(
+                PlanningActivityResult.Rejected,
+                str(e),
+            )
 
         step_name = "sharing operational intent in DSS"
         record, notif_errors = share_op_intent(new_flight, existing_flight, key, log)
@@ -193,8 +204,17 @@ def inject_flight(
         # Store flight in database
         step_name = "storing flight in database"
         log("Storing flight in database")
-        with db as tx:
-            tx.flights[flight_id] = record
+        with db.transact() as tx:
+            tx.value.flights[flight_id] = record
+            if has_conflict:
+                # Record virtual user notification that this flight caused/has a conflict
+                tx.value.flight_planning_notifications.append(
+                    UserNotification(
+                        type=UserNotificationType.CausedConflict,
+                        observed_at=StringBasedDateTime(arrow.utcnow().datetime),
+                        conflicts=Conflict.Single,
+                    )
+                )
 
         step_name = "returning final successful result"
         log("Complete.")
@@ -226,9 +246,9 @@ def inject_flight(
 
 @webapp.route("/scdsc/v1/flights/<flight_id>", methods=["DELETE"])
 @requires_scope(SCOPE_SCD_QUALIFIER_INJECT)
-def scdsc_delete_flight(flight_id: str) -> Tuple[str, int]:
+def scdsc_delete_flight(flight_id: str) -> tuple[str, int]:
     """Implements flight deletion in SCD automated testing injection API."""
-    del_resp = delete_flight(flight_id)
+    del_resp, status_code = delete_flight(flight_id)
 
     if del_resp.activity_result == PlanningActivityResult.Completed:
         if del_resp.flight_plan_status != FlightPlanStatus.Closed:
@@ -248,10 +268,10 @@ def scdsc_delete_flight(flight_id: str) -> Tuple[str, int]:
     resp = DeleteFlightResponse(result=result)
     if notes is not None:
         resp.notes = notes
-    return flask.jsonify(resp), 200
+    return flask.jsonify(resp), status_code
 
 
-def delete_flight(flight_id) -> PlanningActivityResponse:
+def delete_flight(flight_id) -> tuple[PlanningActivityResponse, int]:
     pid = os.getpid()
 
     def log(msg: str):
@@ -274,11 +294,11 @@ def delete_flight(flight_id) -> PlanningActivityResponse:
         )
 
     if flight is None:
-        return unsuccessful("Flight {} does not exist".format(flight_id))
+        return unsuccessful(f"Flight {flight_id} does not exist"), 404
 
     # Delete operational intent from DSS
     step_name = "performing unknown operation"
-    notes: Optional[str] = None
+    notes: str | None = None
     try:
         step_name = f"deleting operational intent {flight.op_intent.reference.id} with OVN {flight.op_intent.reference.ovn} from DSS"
         log(step_name)
@@ -295,42 +315,48 @@ def delete_flight(flight_id) -> PlanningActivityResponse:
             f"{e.__class__.__name__} while {step_name} for flight {flight_id}: {str(e)}"
         )
         log(notes)
-        return unsuccessful(notes)
+        # Activity result is Failed, but we executed the activity successfully
+        return unsuccessful(notes), 200
     except requests.exceptions.ConnectionError as e:
         notes = f"Connection error to {e.request.method} {e.request.url} while {step_name} for flight {flight_id}: {str(e)}"
         log(notes)
         response = unsuccessful(notes)
         response["stacktrace"] = stacktrace_string(e)
-        return response
+        # Activity result is Failed, but we executed the activity successfully
+        return response, 200
     except QueryError as e:
         notes = f"Unexpected response from remote server while {step_name} for flight {flight_id}: {str(e)}"
         log(notes)
         response = unsuccessful(notes)
         response["queries"] = e.queries
         response["stacktrace"] = e.stacktrace
-        return response
+        # Activity result is Failed, but we executed the activity successfully
+        return response, 200
 
     log("Complete.")
-    return PlanningActivityResponse(
-        flight_id=flight_id,
-        queries=[],
-        activity_result=PlanningActivityResult.Completed,
-        flight_plan_status=FlightPlanStatus.Closed,
-        notes=notes,
+    return (
+        PlanningActivityResponse(
+            flight_id=flight_id,
+            queries=[],
+            activity_result=PlanningActivityResult.Completed,
+            flight_plan_status=FlightPlanStatus.Closed,
+            notes=notes,
+        ),
+        200,
     )
 
 
 @webapp.route("/scdsc/v1/clear_area_requests", methods=["POST"])
 @requires_scope(SCOPE_SCD_QUALIFIER_INJECT)
 @idempotent_request()
-def scdsc_clear_area() -> Tuple[str, int]:
+def scdsc_clear_area() -> tuple[str, int]:
     try:
         json = flask.request.json
         if json is None:
             raise ValueError("Request did not contain a JSON payload")
         req: ClearAreaRequest = ImplicitDict.parse(json, ClearAreaRequest)
     except ValueError as e:
-        msg = "Unable to parse ClearAreaRequest JSON request: {}".format(e)
+        msg = f"Unable to parse ClearAreaRequest JSON request: {e}"
         return msg, 400
     clear_resp = clear_area(Volume4D.from_interuss_scd_api(req.extent))
 
@@ -348,12 +374,12 @@ def scdsc_clear_area() -> Tuple[str, int]:
 
 
 def clear_area(extent: Volume4D) -> ClearAreaResponse:
-    flights_deleted: List[FlightID] = []
-    flight_deletion_errors: Dict[FlightID, dict] = {}
-    op_intents_removed: List[f3548v21.EntityOVN] = []
-    op_intent_removal_errors: Dict[f3548v21.EntityOVN, dict] = {}
+    flights_deleted: list[FlightID] = []
+    flight_deletion_errors: dict[FlightID, dict] = {}
+    op_intents_removed: list[f3548v21.EntityOVN] = []
+    op_intent_removal_errors: dict[f3548v21.EntityOVN, dict] = {}
 
-    def make_result(error: Optional[dict] = None) -> ClearAreaResponse:
+    def make_result(error: dict | None = None) -> ClearAreaResponse:
         resp = ClearAreaResponse(
             flights_deleted=flights_deleted,
             flight_deletion_errors=flight_deletion_errors,
@@ -388,11 +414,14 @@ def clear_area(extent: Volume4D) -> ClearAreaResponse:
 
         # Try to remove all relevant flights normally
         for flight_id, flight in db.value.flights.items():
+            if flight is None:
+                continue
+
             # TODO: Check for intersection with flight's area rather than just relying on DSS query
             if flight.op_intent.reference.id not in op_intent_ids:
                 continue
 
-            del_resp = delete_flight(flight_id)
+            del_resp, _status_code = delete_flight(flight_id)
             if (
                 del_resp.activity_result == PlanningActivityResult.Completed
                 and del_resp.flight_plan_status == FlightPlanStatus.Closed
@@ -430,10 +459,10 @@ def clear_area(extent: Volume4D) -> ClearAreaResponse:
                 }
 
         # Clear the op intent cache for every op intent removed
-        with db as tx:
+        with db.transact() as tx:
             for op_intent_id in op_intents_removed:
-                if op_intent_id in tx.cached_operations:
-                    del tx.cached_operations[op_intent_id]
+                if op_intent_id in tx.value.cached_operations:
+                    del tx.value.cached_operations[op_intent_id]
 
     except (ValueError, ConnectionError) as e:
         msg = f"{e.__class__.__name__} while {step_name}: {str(e)}"

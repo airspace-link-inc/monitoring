@@ -1,6 +1,3 @@
-from typing import Dict, List, Optional
-
-import arrow
 from uas_standards.astm.f3548.v21.api import (
     OperationalIntentReference,
     OperationalIntentState,
@@ -21,7 +18,6 @@ from monitoring.monitorlib.clients.flight_planning.planning import (
     PlanningActivityResult,
 )
 from monitoring.monitorlib.fetch import QueryError
-from monitoring.monitorlib.temporal import Time, TimeDuringTest
 from monitoring.monitorlib.testing import make_fake_url
 from monitoring.uss_qualifier.resources.astm.f3548.v21 import DSSInstanceResource
 from monitoring.uss_qualifier.resources.astm.f3548.v21.dss import DSSInstance
@@ -50,8 +46,6 @@ from monitoring.uss_qualifier.suites.suite import ExecutionContext
 
 
 class DownUSS(TestScenario):
-    times: Dict[TimeDuringTest, Time]
-
     flight1_planned: FlightInfoTemplate
 
     uss_qualifier_sub: str
@@ -92,7 +86,7 @@ class DownUSS(TestScenario):
         }
 
     @property
-    def _expected_flight_intents(self) -> List[ExpectedFlightIntent]:
+    def _expected_flight_intents(self) -> list[ExpectedFlightIntent]:
         return [
             ExpectedFlightIntent(
                 "flight1_planned",
@@ -103,15 +97,9 @@ class DownUSS(TestScenario):
         ]
 
     def resolve_flight(self, flight_template: FlightInfoTemplate) -> FlightInfo:
-        self.times[TimeDuringTest.TimeOfEvaluation] = Time(arrow.utcnow().datetime)
-        return flight_template.resolve(self.times)
+        return flight_template.resolve(self.time_context.evaluate_now())
 
     def run(self, context: ExecutionContext):
-        self.times = {
-            TimeDuringTest.StartOfTestRun: Time(context.start_time),
-            TimeDuringTest.StartOfScenario: Time(arrow.utcnow().datetime),
-        }
-
         self.begin_test_scenario(context)
 
         self.record_note(
@@ -132,7 +120,6 @@ class DownUSS(TestScenario):
         self.end_test_scenario()
 
     def _setup(self):
-
         self.begin_test_step("Resolve USS ID of virtual USS")
         with self.check("Successful dummy query", [self.dss.participant_id]) as check:
             try:
@@ -176,7 +163,7 @@ class DownUSS(TestScenario):
         self,
         conflicting_flight: FlightInfo,
         target_state: OperationalIntentState,
-        old_op_intent: Optional[OperationalIntentReference] = None,
+        old_op_intent: OperationalIntentReference | None = None,
     ) -> OperationalIntentReference:
         if old_op_intent is not None:
             key = [old_op_intent.ovn]
@@ -229,7 +216,6 @@ class DownUSS(TestScenario):
         return oi_ref
 
     def _plan_flight_conflict_planned(self):
-
         # Virtual USS creates conflicting operational intent test step
         flight1_planned = self.resolve_flight(self.flight1_planned)
         self._put_conflicting_op_intent_step(
@@ -281,7 +267,6 @@ class DownUSS(TestScenario):
         self.end_test_step()
 
     def _clear_op_intents(self):
-
         with self.check(
             "Successful operational intents cleanup", [self.dss.participant_id]
         ) as check:
@@ -317,25 +302,7 @@ class DownUSS(TestScenario):
 
     def cleanup(self):
         self.begin_cleanup()
-
-        with self.check(
-            "Availability of virtual USS restored", [self.dss.participant_id]
-        ) as check:
-            try:
-                availability_version, avail_query = self.dss.set_uss_availability(
-                    self.uss_qualifier_sub,
-                    True,
-                )
-                self.record_query(avail_query)
-            except QueryError as e:
-                self.record_queries(e.queries)
-                avail_query = e.queries[0]
-                check.record_failed(
-                    summary=f"Availability of USS {self.uss_qualifier_sub} could not be set to available",
-                    details=f"DSS responded code {avail_query.status_code}; {e}",
-                    query_timestamps=[avail_query.request.timestamp],
-                )
-
+        set_uss_available(self, self.dss, self.uss_qualifier_sub)
         cleanup_flights(self, [self.tested_uss])
         self._clear_op_intents()
 
